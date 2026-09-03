@@ -1,0 +1,26 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Session metadata only. Files are NEVER persisted server-side.
+// Tokens are stored as SHA-256 hashes — the raw token exists only in the QR URL.
+model TransferSession {
+  id           String   @id @default(cuid())
+  code         String   @unique
+  tokenHash    String
+  status       String   @default("active") // active | connected | completed | expired | ended | failed
+  fileCount    Int      @default(0)
+  totalBytes   Int      @default(0)
+  guestDevice  String?
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+  endedAt      DateTime?
+
+  @@index([createdAt])
+  @@index([status])
+}
