@@ -1512,6 +1512,6 @@ if (typeof window !== 'undefined') {
     store: useBeamStore, // QA only: full zustand API (setState, subscribe, …)
     debug: beamDebug,
     storeId: Math.random().toString(36).slice(2, 8),
-    version: 6,
+    version: 7,
   }
 }

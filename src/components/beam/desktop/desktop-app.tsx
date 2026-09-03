@@ -12,6 +12,7 @@ import { SessionDashboard, TransfersList, ReceivedFiles } from '@/components/bea
 import { NotesPanel } from '@/components/beam/shared/notes-panel'
 import { GlobalDropOverlay } from '@/components/beam/shared/global-drop-overlay'
 import { QrScannerDialog } from '@/components/beam/shared/qr-scanner'
+import { SharedTextBanner } from '@/components/beam/shared/shared-text-banner'
 import { HistoryView } from '@/components/beam/desktop/history-view'
 import { AboutView } from '@/components/beam/desktop/about-view'
 import { useBeamStore } from '@/lib/beam/engine'
@@ -117,6 +118,9 @@ function TransferView() {
       )}
 
       <section id="transfer" className="mx-auto w-full max-w-5xl scroll-mt-16 px-4 py-10 sm:px-6 sm:py-14">
+        {/* Text that arrived via the PWA share target (OS share sheet → Beam) */}
+        <SharedTextBanner variant="desktop" />
+
         {idle && <DropzoneCard />}
 
         {phase === 'creating' && <CreatingCard />}

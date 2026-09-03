@@ -10,13 +10,16 @@ import {
   Eye,
   FileArchive,
   FileAudio,
+  FileOutput,
   Files,
   FolderOpen,
   Gauge,
   HardDrive,
   Loader2,
   Maximize2,
+  Pencil,
   RotateCcw,
+  Send,
   Timer,
   X,
 } from 'lucide-react'
@@ -31,6 +34,7 @@ import { supportsSaveToFolder } from '@/lib/beam/save-target'
 import { canZip, zipAndDownload } from '@/lib/beam/zip'
 import { FileTypeIcon } from '@/components/beam/desktop/dropzone'
 import { SpeedSparkline } from '@/components/beam/speed-sparkline'
+import { TransferSpeedGraph } from '@/components/beam/speed-graph'
 import { useCountdown } from '@/hooks/use-countdown'
 import { cn } from '@/lib/utils'
 
@@ -60,8 +64,13 @@ export function SessionDashboard() {
   const activeSpeed = rows.reduce((a, r) => a + (r.status === 'active' ? r.speed : 0), 0)
 
   return (
-    <section aria-label="Active session" className="rounded-2xl border border-border bg-card p-5 shadow-sm animate-fade-up">
-      <div className="flex items-start justify-between gap-4">
+    <section
+      aria-label="Active session"
+      className="relative overflow-hidden rounded-2xl border border-border bg-card p-5 shadow-sm animate-fade-up"
+    >
+      {/* subtle emerald wash behind the header — decorative only */}
+      <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-primary/[0.06] to-transparent" />
+      <div className="relative flex items-start justify-between gap-4">
         <div className="flex items-center gap-3">
           <span className="relative flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
             <HardDrive className="h-5 w-5" aria-hidden />
@@ -85,7 +94,7 @@ export function SessionDashboard() {
         </div>
       </div>
 
-      <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
+      <div className="relative mt-4 inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
         <span className="relative flex h-2 w-2">
           <span className="absolute inline-flex h-full w-full rounded-full bg-primary animate-beam-ping" />
           <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
@@ -93,12 +102,14 @@ export function SessionDashboard() {
         Connected{mode === 'relay' ? ' · secure relay' : ' · peer-to-peer'}
       </div>
 
-      <dl className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard icon={Files} label="Files transferred" value={String(stats.filesTransferred)} />
-        <StatCard icon={HardDrive} label="Total data" value={formatBytes(stats.totalData)} />
-        <StatCard icon={Gauge} label="Current speed" value={activeSpeed > 0 ? formatSpeed(activeSpeed) : '—'} />
-        <StatCard icon={Timer} label="Session time" value={formatDuration(elapsed)} />
+      <dl className="relative mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard icon={Files} label="Files transferred" value={String(stats.filesTransferred)} tone="bg-primary/10 text-primary" />
+        <StatCard icon={HardDrive} label="Total data" value={formatBytes(stats.totalData)} tone="bg-teal-500/10 text-teal-600 dark:text-teal-400" />
+        <StatCard icon={Gauge} label="Current speed" value={activeSpeed > 0 ? formatSpeed(activeSpeed) : '—'} tone="bg-amber-500/10 text-amber-600 dark:text-amber-400" />
+        <StatCard icon={Timer} label="Session time" value={formatDuration(elapsed)} tone="bg-zinc-500/10 text-zinc-500 dark:text-zinc-400" />
       </dl>
+
+      <TransferSpeedGraph className="mt-4" />
     </section>
   )
 }
@@ -107,15 +118,19 @@ function StatCard({
   icon: Icon,
   label,
   value,
+  tone,
 }: {
   icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' }>
   label: string
   value: string
+  tone?: string
 }) {
   return (
     <div className="rounded-xl border border-border/70 bg-background/50 p-3 transition-colors duration-200 hover:border-primary/30 hover:bg-primary/5">
       <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <Icon className="h-3.5 w-3.5" aria-hidden />
+        <span className={cn('flex h-4.5 w-4.5 items-center justify-center rounded', tone)}>
+          <Icon className="h-3 w-3" aria-hidden />
+        </span>
         {label}
       </dt>
       <dd className="tnum mt-1 text-lg font-semibold leading-tight">{value}</dd>
@@ -171,15 +186,16 @@ export function TransfersList() {
 
   if (rows.length === 0) {
     return (
-      <section className="rounded-2xl border border-dashed border-border bg-card/50 p-8 text-center">
-        <span
-          aria-hidden
-          className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-muted text-muted-foreground/70"
-        >
-          <Files className="h-5 w-5" />
+      <section className="relative overflow-hidden rounded-2xl border border-dashed border-border bg-card/50 p-10 text-center">
+        <span aria-hidden className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(5,150,105,0.05),transparent_60%)]" />
+        <span className="relative mx-auto flex h-14 w-14 items-center justify-center">
+          <span aria-hidden className="absolute inset-0 rounded-full border border-dashed border-primary/30 animate-[spin_14s_linear_infinite]" />
+          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <Files className="h-4.5 w-4.5" />
+          </span>
         </span>
-        <p className="mt-3 text-sm font-medium">No transfers yet</p>
-        <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
+        <p className="relative mt-4 text-sm font-medium">No transfers yet</p>
+        <p className="relative mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
           {incomingFiles.length > 0
             ? 'Receiving files from the phone…'
             : 'Files you select are ready for the phone to download. The phone can also send files back — they’ll appear here.'}
@@ -226,7 +242,7 @@ export function TransferRowItem({ row }: { row: TransferRow }) {
   const active = row.status === 'active'
 
   return (
-    <li className="px-4 py-3 animate-row-in">
+    <li className="px-4 py-3 animate-row-in transition-colors hover:bg-accent/30">
       <div className="flex items-center gap-3">
         <span
           className={cn(
@@ -389,7 +405,13 @@ export function ReceivedFiles() {
       </header>
       <ul className="beam-scroll max-h-72 divide-y divide-primary/10 overflow-y-auto">
         {received.map((file) => (
-          <li key={file.id} className="animate-row-in flex items-center gap-3 px-4 py-3 transition-colors hover:bg-primary/5">
+          <li
+            key={file.id}
+            draggable
+            onDragStart={(e) => handleReceivedDragStart(file, e)}
+            title="Drag this row out to your desktop or a folder to save it there"
+            className="group/row animate-row-in flex cursor-grab items-center gap-3 px-4 py-3 transition-colors hover:bg-primary/5 active:cursor-grabbing"
+          >
             {file.type.startsWith('image/') ? (
               <button
                 type="button"
@@ -430,10 +452,17 @@ export function ReceivedFiles() {
                 <Download className="h-4 w-4" aria-hidden />
                 {saveFolder ? 'Save' : 'Download'}
               </Button>
+              <span
+                aria-hidden
+                title="Drag this row out to save it anywhere"
+                className="hidden h-8 w-8 items-center justify-center rounded-md text-muted-foreground/40 transition-all group-hover/row:text-primary md:flex"
+              >
+                <FileOutput className="h-4 w-4" />
+              </span>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 text-muted-foreground"
+                className="h-8 w-8 text-muted-foreground opacity-100 transition-opacity md:opacity-0 md:group-focus-within/row:opacity-100 md:group-hover/row:opacity-100"
                 onClick={() => {
                   saveReceived(file.id)
                   notifyOpenFolderHint()
@@ -445,7 +474,7 @@ export function ReceivedFiles() {
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 text-muted-foreground"
+                className="h-8 w-8 text-muted-foreground opacity-100 transition-opacity md:opacity-0 md:group-focus-within/row:opacity-100 md:group-hover/row:opacity-100"
                 onClick={() => dismissReceived(file.id)}
                 aria-label={`Dismiss ${file.name}`}
               >
@@ -479,6 +508,41 @@ export function previewKind(file: ReceivedFile): 'image' | 'video' | 'audio' | '
   return null
 }
 
+/**
+ * Drag-out: native OS drag of a received file straight into Finder/Explorer,
+ * another app, or the desktop. Works in Chromium via the DownloadURL data
+ * type (blob: URLs are resolved by the drop target); other browsers still
+ * get uri-list/text fallbacks. The payload is mirrored to window.__beam
+ * for QA verification.
+ */
+function handleReceivedDragStart(file: ReceivedFile, e: React.DragEvent) {
+  const mime = file.type || 'application/octet-stream'
+  const payload = `${mime}:${file.name}:${file.url}`
+  try {
+    e.dataTransfer.setData('DownloadURL', payload)
+  } catch {
+    /* some engines reject unknown types — fallbacks below still apply */
+  }
+  try {
+    e.dataTransfer.setData('text/uri-list', file.url)
+    e.dataTransfer.setData('text/plain', file.name)
+  } catch {
+    /* ignore */
+  }
+  e.dataTransfer.effectAllowed = 'copy'
+  const w = window as unknown as { __beam?: Record<string, unknown> }
+  if (w.__beam) {
+    w.__beam.lastDragOut = {
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      url: file.url,
+      payload,
+      at: Date.now(),
+    }
+  }
+}
+
 /** Full preview dialog — images, video, audio, PDF, and text files. */
 function FilePreviewDialog({
   file,
@@ -490,7 +554,18 @@ function FilePreviewDialog({
   onDownload: () => void
 }) {
   const [textState, setTextState] = useState<{ id: string; body: string } | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
   const kind = file ? previewKind(file) : null
+  const phase = useBeamStore((s) => s.phase)
+
+  // Editable: small text files while the session is live (sends back to the phone)
+  const editable = kind === 'text' && file !== null && file.size <= 100 * 1024 && phase === 'connected'
+
+  // Switching files always leaves edit mode
+  useEffect(() => {
+    setEditing(false)
+  }, [file?.id])
 
   useEffect(() => {
     if (!file || kind !== 'text') return
@@ -512,6 +587,29 @@ function FilePreviewDialog({
 
   const textBody = file && kind === 'text' && textState && textState.id === file.id ? textState.body : null
 
+  const startEditing = () => {
+    if (textBody === null) return
+    setDraft(textBody)
+    setEditing(true)
+  }
+
+  const sendEditedBack = () => {
+    if (!file) return
+    const ext = file.name.match(/\.[^./]+$/)?.[0] ?? '.txt'
+    const base = file.name.replace(/\.[^./]+$/, '')
+    const edited = new File([draft], `${base} (edited)${ext}`, {
+      type: file.type || 'text/plain',
+    })
+    useBeamStore.getState().addFiles([edited])
+    setEditing(false)
+    onClose()
+    import('sonner').then(({ toast }) =>
+      toast.success('Edited copy sent back', {
+        description: `“${edited.name}” is now in the session — the phone can download it from “From desktop”.`,
+      }),
+    )
+  }
+
   return (
     <Dialog open={file !== null} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-lg gap-0 overflow-hidden p-0 sm:max-w-2xl">
@@ -519,6 +617,16 @@ function FilePreviewDialog({
           <>
             <DialogTitle className="sr-only">Preview of {file.name}</DialogTitle>
             <div className="flex max-h-[65vh] items-center justify-center overflow-hidden bg-zinc-950">
+              {editing && kind === 'text' ? (
+                <textarea
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  spellCheck={false}
+                  aria-label={`Edit ${file.name} before sending it back`}
+                  className="beam-scroll h-[65vh] w-full animate-fade-up resize-none bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-200 outline-none"
+                />
+              ) : (
+              <>
               {kind === 'image' && (
                 <img
                   src={file.url}
@@ -562,16 +670,44 @@ function FilePreviewDialog({
                   <p className="text-sm text-zinc-400">No inline preview for this file type — save it to open locally.</p>
                 </div>
               )}
+              </>
+              )}
             </div>
             <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3">
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium">{file.name}</p>
                 <p className="tnum text-xs text-muted-foreground">{formatBytes(file.size)} · {file.type}</p>
               </div>
-              <Button size="sm" onClick={onDownload}>
-                <Download className="h-4 w-4" aria-hidden />
-                Save
-              </Button>
+              {editing && kind === 'text' ? (
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+                    Cancel
+                  </Button>
+                  <Button size="sm" onClick={sendEditedBack} disabled={draft === textBody}>
+                    <Send className="h-4 w-4" aria-hidden />
+                    Send to phone
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex shrink-0 items-center gap-2">
+                  {editable && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={startEditing}
+                      disabled={textBody === null}
+                      title="Tweak the text here and push the edited copy back to the phone"
+                    >
+                      <Pencil className="h-4 w-4" aria-hidden />
+                      Edit & send back
+                    </Button>
+                  )}
+                  <Button size="sm" onClick={onDownload}>
+                    <Download className="h-4 w-4" aria-hidden />
+                    Save
+                  </Button>
+                </div>
+              )}
             </div>
           </>
         )}

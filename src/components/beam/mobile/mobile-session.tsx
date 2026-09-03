@@ -33,6 +33,7 @@ import { Logo } from '@/components/beam/logo'
 import { FileTypeIcon } from '@/components/beam/desktop/dropzone'
 import { TransferRowItem } from '@/components/beam/desktop/session-panel'
 import { NotesPanel } from '@/components/beam/shared/notes-panel'
+import { SharedTextBanner } from '@/components/beam/shared/shared-text-banner'
 import { QrScannerDialog } from '@/components/beam/shared/qr-scanner'
 import { useCountdown } from '@/hooks/use-countdown'
 import { useSoundMuted } from '@/hooks/use-sound-muted'
@@ -301,6 +302,9 @@ function ConnectedView() {
           </div>
         )}
       </section>
+
+      {/* Text shared into Beam from the OS share sheet (if any) */}
+      <SharedTextBanner variant="mobile" />
 
       {/* Send: files to desktop */}
       <SendToDesktop disabled={!peerDevice || mode === 'none'} rows={p2dRows} active={p2dActive} />

@@ -3,6 +3,7 @@
 import { useEffect } from 'react'
 import { ThemeProvider } from 'next-themes'
 import { toast } from 'sonner'
+import { consumeSharedTextFromUrl } from '@/lib/beam/share-target'
 
 /**
  * App-wide providers: dark/light theme + bridge that turns engine-level
@@ -23,6 +24,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
     }
     window.addEventListener('beam:notify', handler)
     return () => window.removeEventListener('beam:notify', handler)
+  }, [])
+
+  // Web Share Target: text shared into Beam from the OS share sheet lands
+  // as ?title/&text/&url params — stash it and clean the address bar.
+  useEffect(() => {
+    consumeSharedTextFromUrl()
   }, [])
 
   // PWA: register the (network-only, cache-free) service worker so the
