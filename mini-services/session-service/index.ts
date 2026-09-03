@@ -24,7 +24,7 @@ import {
   validateFileManifest,
   type SessionRecord,
 } from './sessions'
-import { LIMITS, type BeamErrorCode, type DeviceInfo, type Role } from './protocol'
+import { LIMITS, EXTEND_WINDOW_MS, type BeamErrorCode, type DeviceInfo, type Role } from './protocol'
 
 const PORT = 3003 // hardcoded per architecture (Caddy gateway rule)
 
@@ -462,6 +462,8 @@ io.on('connection', (socket) => {
   registerEvent(socket, 'beam:transfer:done', (p) => handleTransferDone(socket, p))
   registerEvent(socket, 'beam:transfer:cancel', (p) => handleTransferCancel(socket, p))
   registerEvent(socket, 'beam:transfer:error', (p) => handleTransferError(socket, p))
+  registerEvent(socket, 'beam:note', (p) => handleBeamNote(socket, p))
+  registerEvent(socket, 'beam:extend', (p) => handleBeamExtend(socket, p))
   registerEvent(socket, 'beam:end', (p) => handleBeamEnd(socket, p))
 
   socket.on('disconnect', () => handleDisconnect(socket))
@@ -766,6 +768,43 @@ function handleBeamEnd(socket: Socket, payload: unknown): void {
   const code = normCode(payload.code)
   if (!code || code !== ctx.code) return
   endSessionByCode(code) // either peer may end the session
+}
+
+/** Relays a short text note to the paired device (no storage, no WebRTC needed). */
+function handleBeamNote(socket: Socket, payload: unknown): void {
+  const ctx = socketSessions.get(socket.id)
+  if (!ctx || !isRecord(payload)) return
+  const code = normCode(payload.code)
+  if (!code || code !== ctx.code) return
+  const text = typeof payload.text === 'string' ? payload.text : ''
+  // Trim, require visible content, enforce the protocol cap.
+  const clean = text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim()
+  if (!clean || clean.length > LIMITS.MAX_NOTE_CHARS) return
+  const ok = relayToPeer(socket, 'beam:note', { text: clean, from: ctx.role, at: Date.now() })
+  if (!ok) {
+    // Best-effort delivery: tell the sender the peer is gone (UI keeps the local echo).
+    socket.emit('beam:note:error', { code, message: 'Other device disconnected — the note was not delivered' })
+  }
+}
+
+/** Host-only: resets the session expiry back to a full TTL when inside the extend window. */
+function handleBeamExtend(socket: Socket, payload: unknown): void {
+  const ctx = socketSessions.get(socket.id)
+  if (!ctx || !isRecord(payload)) return
+  const code = normCode(payload.code)
+  if (!code || code !== ctx.code) return
+  if (ctx.role !== 'host') return
+  const session = registry.get(code)
+  if (!session || session.status === 'ended') return
+  const now = Date.now()
+  if (now >= session.expiresAt) return
+  if (session.expiresAt - now > EXTEND_WINDOW_MS) {
+    socket.emit('beam:extend:declined', { code, message: 'Sessions can be extended in the last 5 minutes' })
+    return
+  }
+  session.expiresAt = now + session.ttlMs
+  io.to(code).emit('beam:extended', { code, expiresAt: session.expiresAt })
+  console.log(`[beam] session extended code=${code} ttl=${Math.round(session.ttlMs / 60000)}m`)
 }
 
 // ---------------------------------------------------------------------------

@@ -40,6 +40,15 @@ export function formatCountdown(ms: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
+/** Short clock time (e.g. "14:32") for chat-style timestamps. */
+export function formatClockTime(epochMs: number): string {
+  if (!Number.isFinite(epochMs)) return ''
+  return new Date(epochMs).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 export function formatRelativeTime(date: number | Date): string {
   const then = typeof date === 'number' ? date : date.getTime()
   const diff = Date.now() - then

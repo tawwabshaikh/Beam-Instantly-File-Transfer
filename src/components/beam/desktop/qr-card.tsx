@@ -8,6 +8,8 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { useBeamStore } from '@/lib/beam/engine'
 import { formatCountdown } from '@/lib/beam/format'
+import { EXTEND_WINDOW_MS } from '@/lib/beam/protocol'
+import { ExtendButton } from '@/components/beam/desktop/session-panel'
 import { useCountdown } from '@/hooks/use-countdown'
 import { cn } from '@/lib/utils'
 
@@ -86,17 +88,22 @@ export function QrCard({ variant }: { variant: 'full' | 'compact' }) {
           </Dialog>
         </div>
         {expiresSoon && (
-          <p className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-            {joined
-              ? 'Session is ending soon — finishes current transfers, then create a fresh code for the next pair-up.'
-              : 'Session is about to expire — renew soon to keep transfers going.'}
-          </p>
+          <div className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+            <p>
+              {joined
+                ? 'Session is ending soon — finishes current transfers, then create a fresh code for the next pair-up.'
+                : 'Session is about to expire — extend it to keep the same code and link alive.'}
+            </p>
+            {!joined && <ExtendButton expiresAt={session?.expiresAt ?? 0} className="mt-2 h-7 w-full" />}
+          </div>
         )}
       </div>
     )
   }
 
   /* ---------------- full variant (waiting / connecting) ---------------- */
+
+  const canExtendHere = remaining > 0 && remaining <= EXTEND_WINDOW_MS && !connecting
 
   return (
     <section
@@ -153,6 +160,12 @@ export function QrCard({ variant }: { variant: 'full' | 'compact' }) {
               <RefreshCw className="h-3 w-3" aria-hidden />
               Generate a fresh code
             </button>
+            {canExtendHere && (
+              <p className="mt-1 rounded-lg bg-amber-500/10 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-400">
+                Session expiring soon — the QR stops working at 00:00.
+              </p>
+            )}
+            {canExtendHere && <ExtendButton expiresAt={session?.expiresAt ?? 0} className="h-8" />}
           </div>
         )}
       </div>

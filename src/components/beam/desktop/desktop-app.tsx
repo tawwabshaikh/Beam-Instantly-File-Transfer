@@ -9,6 +9,7 @@ import { LandingSections } from '@/components/beam/desktop/landing'
 import { DropzoneCard, FilesCard } from '@/components/beam/desktop/dropzone'
 import { QrCard } from '@/components/beam/desktop/qr-card'
 import { SessionDashboard, TransfersList, ReceivedFiles } from '@/components/beam/desktop/session-panel'
+import { NotesPanel } from '@/components/beam/shared/notes-panel'
 import { HistoryView } from '@/components/beam/desktop/history-view'
 import { AboutView } from '@/components/beam/desktop/about-view'
 import { useBeamStore } from '@/lib/beam/engine'
@@ -99,8 +100,9 @@ function SessionArea() {
           <ReceivedFiles />
           <FilesCard compact />
         </div>
-        <div className="lg:col-span-2">
+        <div className="flex flex-col gap-6 lg:col-span-2">
           <QrCard variant="compact" />
+          <NotesPanel variant="desktop" />
         </div>
       </div>
     )

@@ -131,6 +131,23 @@ export interface ModeEventPayload {
   mode: TransportMode
 }
 
+/** Client → Server: short text note for the paired device (relay-only, tiny). */
+export interface NotePayload extends CodePayload {
+  text: string
+}
+
+/** Server → peer: a text note from the other device. */
+export interface NoteEventPayload {
+  text: string
+  from: Role
+  at: number
+}
+
+/** Server → room: the host extended the session; new absolute expiry. */
+export interface ExtendedEventPayload {
+  expiresAt: number
+}
+
 /** ---- Limits (kept in sync with service env defaults) ---- */
 export const LIMITS = {
   MAX_FILES: 20,
@@ -142,7 +159,11 @@ export const LIMITS = {
   BUFFER_HIGH_WATER: 4 * 1024 * 1024, // DC bufferedAmount cap
   BUFFER_LOW_WATER: 512 * 1024,
   P2P_TIMEOUT_MS: 12_000, // wait for DataChannel before relay fallback
+  MAX_NOTE_CHARS: 20_000, // text notes relayed between peers
 } as const
+
+/** A session can be extended only within this window before expiry. */
+export const EXTEND_WINDOW_MS = 5 * 60_000
 
 /** Extensions we refuse to transfer (executables / scripts). */
 export const BLOCKED_EXTENSIONS = [

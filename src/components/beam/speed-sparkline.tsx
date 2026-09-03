@@ -27,6 +27,9 @@ export function SpeedSparkline({
   useEffect(() => {
     if (!active) return
     const iv = setInterval(() => {
+      // Battery saver: skip sampling while the tab is hidden — the chart
+      // simply freezes and resumes when the tab is visible again.
+      if (typeof document !== 'undefined' && document.hidden) return
       setSeries((prev) => {
         const next = [...prev, speedRef.current]
         return next.length > 24 ? next.slice(-24) : next

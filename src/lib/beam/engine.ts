@@ -83,6 +83,14 @@ export interface BeamSession {
   joinUrl: string
 }
 
+/** A short text note exchanged with the paired device. */
+export interface BeamNote {
+  id: string
+  text: string
+  from: Role
+  at: number
+}
+
 export interface BeamState {
   role: Role | null
   phase: BeamPhase
@@ -94,6 +102,7 @@ export interface BeamState {
   incomingFiles: FileMeta[]
   transfers: Record<string, TransferRow>
   received: ReceivedFile[]
+  notes: BeamNote[]
   mode: TransportMode | 'none'
   peerDevice: DeviceInfo | null
   connectedAt: number | null
@@ -116,6 +125,8 @@ interface BeamActions {
   saveReceived(id: string): void
   shareReceived(id: string): Promise<void>
   dismissReceived(id: string): void
+  sendNote(text: string): void
+  extendSession(): void
   retryTransfer(transferId: string): void
   cancelTransfer(transferId: string): void
   markExpiredIfDue(): void
@@ -139,6 +150,7 @@ let joinSentFor: string | null = null // guards duplicate beam:join emits
 let joinAttempts = 0
 
 const fileObjects = new Map<string, File>() // this device's outbound files
+const MAX_NOTES = 50 // notes kept in memory per session
 const sinks = new Map<
   string,
   { parts: ArrayBuffer[]; received: number; meta: FileMeta; direction: TransferDirection }
@@ -978,6 +990,39 @@ function ensureSocket(): Socket {
     notify('info', 'Session ended', 'This transfer session has been closed.')
   })
 
+  socket.on('beam:note', (data: { text: string; from: Role; at: number }) => {
+    const st = useBeamStore.getState()
+    if (!st.session || typeof data?.text !== 'string' || !data.text) return
+    const note: BeamNote = {
+      id: genId(),
+      text: data.text.slice(0, LIMITS.MAX_NOTE_CHARS),
+      from: data.from === 'host' ? 'host' : 'guest',
+      at: typeof data.at === 'number' && Number.isFinite(data.at) ? data.at : Date.now(),
+    }
+    useBeamStore.setState((s) => ({ notes: [...s.notes, note].slice(-MAX_NOTES) }))
+    notify(
+      'info',
+      st.role === 'host' ? 'Note from phone' : 'Note from desktop',
+      note.text.length > 90 ? `${note.text.slice(0, 90)}…` : note.text,
+    )
+    playChime()
+  })
+
+  socket.on('beam:note:error', (data: { message: string }) => {
+    if (data?.message) notify('error', 'Note not delivered', data.message)
+  })
+
+  socket.on('beam:extended', (data: { expiresAt: number }) => {
+    const st = useBeamStore.getState()
+    if (!st.session || typeof data?.expiresAt !== 'number' || !Number.isFinite(data.expiresAt)) return
+    useBeamStore.setState({ session: { ...st.session, expiresAt: data.expiresAt } })
+    notify('success', 'Session extended', 'Fresh countdown — keep everything open to stay paired.')
+  })
+
+  socket.on('beam:extend:declined', () => {
+    notify('info', 'Cannot extend yet', 'Sessions can be extended during the last 5 minutes.')
+  })
+
   socket.on('beam:expired', () => {
     destroyPeer()
     useBeamStore.setState({ phase: 'expired', mode: 'none', peerDevice: null })
@@ -1025,6 +1070,7 @@ const initialState: BeamState = {
   incomingFiles: [],
   transfers: {},
   received: [],
+  notes: [],
   mode: 'none',
   peerDevice: null,
   connectedAt: null,
@@ -1325,6 +1371,36 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
     set((s) => ({ received: s.received.filter((r) => r.id !== id) }))
   },
 
+  sendNote(text: string) {
+    const trimmed = text.replace(/\s+$/g, '').trim()
+    if (!trimmed) return
+    const st = get()
+    if (!st.session || st.phase !== 'connected') {
+      notify('info', 'Not connected', 'Notes can be sent once both devices are paired.')
+      return
+    }
+    if (trimmed.length > LIMITS.MAX_NOTE_CHARS) {
+      notify('error', 'Note too long', `Keep notes under ${(LIMITS.MAX_NOTE_CHARS / 1000).toFixed(0)}k characters.`)
+      return
+    }
+    emitCode('beam:note', { text: trimmed })
+    // Local echo — the sender sees their own note immediately.
+    const note: BeamNote = {
+      id: genId(),
+      text: trimmed,
+      from: st.role === 'guest' ? 'guest' : 'host',
+      at: Date.now(),
+    }
+    set((s) => ({ notes: [...s.notes, note].slice(-MAX_NOTES) }))
+  },
+
+  extendSession() {
+    const st = get()
+    if (st.role !== 'host' || !st.session) return
+    if (!['waiting', 'connecting', 'connected'].includes(st.phase)) return
+    emitCode('beam:extend', {})
+  },
+
   retryTransfer(transferId: string) {
     const row = get().transfers[transferId]
     if (!row || row.status === 'active') return
@@ -1373,6 +1449,6 @@ if (typeof window !== 'undefined') {
     store: useBeamStore, // QA only: full zustand API (setState, subscribe, …)
     debug: beamDebug,
     storeId: Math.random().toString(36).slice(2, 8),
-    version: 3,
+    version: 4,
   }
 }

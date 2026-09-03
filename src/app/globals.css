@@ -268,3 +268,70 @@
   background-size: 22px 22px;
   mask-image: radial-gradient(ellipse 75% 65% at 50% 0%, black 35%, transparent 78%);
 }
+
+/* Hero keyword — shimmering gradient text with a drawn-in underline */
+@keyframes beam-shimmer-text {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+.hero-shimmer {
+  position: relative;
+  background-image: linear-gradient(
+    110deg,
+    var(--color-primary) 42%,
+    color-mix(in oklab, var(--color-primary) 55%, white) 50%,
+    var(--color-primary) 58%
+  );
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: beam-shimmer-text 3.8s linear infinite;
+}
+.hero-shimmer::after {
+  content: '';
+  position: absolute;
+  left: 1%;
+  right: 1%;
+  bottom: -0.1em;
+  height: 0.07em;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--color-primary),
+    color-mix(in oklab, var(--color-primary) 30%, transparent)
+  );
+  transform-origin: left center;
+  animation: beam-underline-in 0.9s 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes beam-underline-in {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* Respect reduced-motion for all continuous decorative animations */
+@media (prefers-reduced-motion: reduce) {
+  .hero-shimmer,
+  .hero-shimmer::after,
+  .animate-beam-ping,
+  .progress-shine::after {
+    animation: none;
+  }
+  .hero-shimmer {
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+    color: var(--color-primary);
+  }
+  .hero-shimmer::after {
+    transform: scaleX(1);
+  }
+}

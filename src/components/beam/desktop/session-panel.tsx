@@ -22,8 +22,10 @@ import { Progress } from '@/components/ui/progress'
 import { useBeamStore, type TransferRow } from '@/lib/beam/engine'
 import { formatBytes, formatDuration, formatRelativeTime, formatSpeed } from '@/lib/beam/format'
 import { describeDevice } from '@/lib/beam/device'
+import { EXTEND_WINDOW_MS } from '@/lib/beam/protocol'
 import { FileTypeIcon } from '@/components/beam/desktop/dropzone'
 import { SpeedSparkline } from '@/components/beam/speed-sparkline'
+import { useCountdown } from '@/hooks/use-countdown'
 import { cn } from '@/lib/utils'
 
 /* ------------------------------------------------------------------ */
@@ -36,6 +38,8 @@ export function SessionDashboard() {
   const connectedAt = useBeamStore((s) => s.connectedAt)
   const transfers = useBeamStore((s) => s.transfers)
   const endSession = useBeamStore((s) => s.endSession)
+  const session = useBeamStore((s) => s.session)
+  const mode = useBeamStore((s) => s.mode)
 
   const [elapsed, setElapsed] = useState(0)
   useEffect(() => {
@@ -61,15 +65,18 @@ export function SessionDashboard() {
             <p className="text-sm text-muted-foreground">{describeDevice(peerDevice)}</p>
           </div>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-8 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
-          onClick={() => void endSession()}
-        >
-          <X className="h-4 w-4" aria-hidden />
-          End Session
-        </Button>
+        <div className="flex items-center gap-2">
+          <ExtendButton expiresAt={session?.expiresAt ?? 0} />
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+            onClick={() => void endSession()}
+          >
+            <X className="h-4 w-4" aria-hidden />
+            End Session
+          </Button>
+        </div>
       </div>
 
       <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
@@ -77,7 +84,7 @@ export function SessionDashboard() {
           <span className="absolute inline-flex h-full w-full rounded-full bg-primary animate-beam-ping" />
           <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
         </span>
-        Connected{useBeamStore.getState().mode === 'relay' ? ' · secure relay' : ' · peer-to-peer'}
+        Connected{mode === 'relay' ? ' · secure relay' : ' · peer-to-peer'}
       </div>
 
       <dl className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -107,6 +114,32 @@ function StatCard({
       </dt>
       <dd className="tnum mt-1 text-lg font-semibold leading-tight">{value}</dd>
     </div>
+  )
+}
+
+/**
+ * Host-only: resets the session countdown back to a full 10 minutes.
+ * The service accepts extends only within the last EXTEND_WINDOW_MS,
+ * so the control is hidden/disabled outside that window.
+ */
+export function ExtendButton({ expiresAt, className }: { expiresAt: number; className?: string }) {
+  const remaining = useCountdown(expiresAt)
+  const extendSession = useBeamStore((s) => s.extendSession)
+  const canExtend = expiresAt > 0 && remaining > 0 && remaining <= EXTEND_WINDOW_MS
+
+  if (!expiresAt) return null
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className={cn('h-8', className)}
+      onClick={extendSession}
+      disabled={!canExtend}
+      title={canExtend ? 'Reset the session countdown to a fresh 10 minutes' : 'Available during the last 5 minutes'}
+    >
+      <Timer className="h-4 w-4 text-primary" aria-hidden />
+      Extend +10 min
+    </Button>
   )
 }
 

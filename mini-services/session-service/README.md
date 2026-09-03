@@ -72,16 +72,27 @@ Client → server:
 `beam:mode {code,mode}` (host only) · `beam:manifest {code,files}` (host only, stored) ·
 `beam:incoming {code,files}` (guest only, relayed) ·
 `beam:transfer:request|start|chunk|ack|done|cancel|error` (relay pipe; `data`
-must be ArrayBuffer/Uint8Array ≤ 256 KB) · `beam:end {code}` (either peer).
+must be ArrayBuffer/Uint8Array ≤ 256 KB) · `beam:note {code,text}` (≤ 20 000 chars,
+relayed verbatim to the peer, never stored) · `beam:extend {code}` (host only) ·
+`beam:end {code}` (either peer).
 
 Server → client:
 `beam:joined {ok:true,role,session,yourDevice}` · `beam:error {ok:false,code,message}` ·
 `beam:peer {event:'joined'|'left',device}` · `beam:signal {signal}` · `beam:mode {mode}` ·
 `beam:manifest {files}` · `beam:incoming {files}` · all `beam:transfer:*` forwarded to the peer ·
+`beam:note {text,from,at}` · `beam:note:error {code,message}` (peer gone — note not delivered) ·
+`beam:extended {code,expiresAt}` (room-wide; expiry reset to a full TTL) ·
+`beam:extend:declined {code,message}` (sender outside the extend window) ·
 `beam:ended {code}` · `beam:expired {code}`.
 
 - `beam:error` codes: `NOT_FOUND | EXPIRED | ENDED | INVALID_TOKEN | ROLE_TAKEN | RATE_LIMITED | BAD_REQUEST`.
   Join rate limit: **20 joins / min / IP**.
+- Extend window: a host may reset `expiresAt` to `now + ttl` only when the
+  session is within its **last 5 minutes** (`EXTEND_WINDOW_MS`); earlier attempts
+  get `beam:extend:declined`, guest attempts are ignored.
+- Notes: whitespace/control chars stripped, capped at `LIMITS.MAX_NOTE_CHARS`
+  (20 000); empty/oversized notes are silently dropped; if the peer socket is
+  gone the sender receives `beam:note:error`.
 - Chunk throttle: token bucket ≈ **3000 chunks/s per socket**; over-throttle
   chunks are dropped and the sender gets `beam:transfer:error {message:'Rate limited'}`.
   Oversized chunks (>` 256 KB`) get `{message:'Chunk too large'}`. Chunks are never logged.

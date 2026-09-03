@@ -43,7 +43,7 @@ function Hero({ onStart }: { onStart: () => void }) {
         </span>
         <h1 className="max-w-3xl text-balance text-4xl font-semibold leading-[1.1] tracking-tight sm:text-5xl md:text-6xl">
           Move files between devices.{' '}
-          <span className="text-primary">Instantly.</span>
+          <span className="hero-shimmer">Instantly.</span>
         </h1>
         <p className="mt-5 max-w-2xl text-pretty text-base text-muted-foreground sm:text-lg">
           Scan once. Transfer securely. No cables. No apps.{' '}

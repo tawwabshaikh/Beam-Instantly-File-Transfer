@@ -1,0 +1,828 @@
+     1→/**
+     2→ * Beam session service — session registry + WebRTC signaling relay + chunk pipe.
+     3→ *
+     4→ * Single Bun process on :3003 (hardcoded by design — the Caddy gateway and the
+     5→ * Next.js app expect this port; the port is never put in the URL path).
+     6→ * REST and socket.io share ONE HTTP listener.
+     7→ *
+     8→ * Implementation note: socket.io v4 (engine.io) needs a node:http Server to
+     9→ * hook `request`/`upgrade`, so the listener is created with node's
+    10→ * createServer() — which Bun implements natively (same engine as Bun.serve).
+    11→ * Because the socket.io path is '/' (per protocol v1), engine.io's request
+    12→ * dispatcher would otherwise treat *every* URL as engine.io traffic; see
+    13→ * patchEngineIoRouting() below for how REST routes are preserved.
+    14→ */
+    15→
+    16→import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+    17→import { Server as SocketIOServer, type Socket } from 'socket.io'
+    18→import {
+    19→  ChunkThrottle,
+    20→  RateLimiter,
+    21→  SessionRegistry,
+    22→  isRecord,
+    23→  sanitizeDevice,
+    24→  validateFileManifest,
+    25→  type SessionRecord,
+    26→} from './sessions'
+    27→import { LIMITS, type BeamErrorCode, type DeviceInfo, type Role } from './protocol'
+    28→
+    29→const PORT = 3003 // hardcoded per architecture (Caddy gateway rule)
+    30→
+    31→const DEFAULT_TTL_MINUTES = 10
+    32→const MIN_TTL_MINUTES = 1
+    33→const MAX_TTL_MINUTES = 60
+    34→
+    35→const MAX_CHUNK_BYTES = 256 * 1024 // server-side cap for beam:transfer:chunk
+    36→const CHUNK_TOKENS_PER_SEC = 3000 // per-socket token-bucket refill
+    37→const MAX_SIGNAL_BYTES = 64 * 1024 // serialized SDP/ICE guard
+    38→const MAX_JSON_BODY_BYTES = 512 * 1024
+    39→const MAX_TRANSFER_ID_LENGTH = 64
+    40→const MAX_SHORT_STRING = 256
+    41→
+    42→const CREATE_RATE_LIMIT = { limit: 12, windowMs: 60_000 } // POST /sessions per IP
+    43→const READ_RATE_LIMIT = { limit: 30, windowMs: 60_000 } // GET + POST end per IP
+    44→const JOIN_RATE_LIMIT = { limit: 20, windowMs: 60_000 } // beam:join per IP
+    45→const SWEEP_INTERVAL_MS = 10_000
+    46→
+    47→// ---------------------------------------------------------------------------
+    48→// CORS (REST) — default '*', restrict with ALLOWED_ORIGINS="a,b,c"
+    49→// ---------------------------------------------------------------------------
+    50→
+    51→const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '*')
+    52→  .split(',')
+    53→  .map((s) => s.trim())
+    54→  .filter(Boolean)
+    55→const allowAllOrigins = allowedOrigins.length === 0 || allowedOrigins.includes('*')
+    56→
+    57→function applyCors(req: IncomingMessage, res: ServerResponse): void {
+    58→  if (allowAllOrigins) {
+    59→    res.setHeader('Access-Control-Allow-Origin', '*')
+    60→    return
+    61→  }
+    62→  const origin = req.headers.origin
+    63→  if (typeof origin === 'string' && allowedOrigins.includes(origin)) {
+    64→    res.setHeader('Access-Control-Allow-Origin', origin)
+    65→    res.setHeader('Vary', 'Origin')
+    66→  }
+    67→}
+    68→
+    69→// ---------------------------------------------------------------------------
+    70→// In-memory state
+    71→// ---------------------------------------------------------------------------
+    72→
+    73→const registry = new SessionRegistry()
+    74→const createLimiter = new RateLimiter(CREATE_RATE_LIMIT.limit, CREATE_RATE_LIMIT.windowMs)
+    75→const readLimiter = new RateLimiter(READ_RATE_LIMIT.limit, READ_RATE_LIMIT.windowMs)
+    76→const joinLimiter = new RateLimiter(JOIN_RATE_LIMIT.limit, JOIN_RATE_LIMIT.windowMs)
+    77→const chunkThrottle = new ChunkThrottle(CHUNK_TOKENS_PER_SEC)
+    78→
+    79→/** socket.id → joined session context. Membership in the socket.io room is implied. */
+    80→const socketSessions = new Map<string, { code: string; role: Role; device: DeviceInfo }>()
+    81→
+    82→// ---------------------------------------------------------------------------
+    83→// HTTP server + socket.io on the SAME listener
+    84→// ---------------------------------------------------------------------------
+    85→
+    86→const server = createServer((req, res) => {
+    87→  void restHandler(req, res)
+    88→})
+    89→
+    90→const io = new SocketIOServer(server, {
+    91→  path: '/',
+    92→  cors: allowAllOrigins ? { origin: '*', methods: ['GET', 'POST'] } : { origin: allowedOrigins, methods: ['GET', 'POST'] },
+    93→  pingTimeout: 60_000,
+    94→  pingInterval: 25_000,
+    95→  maxHttpBufferSize: 2_000_000,
+    96→})
+    97→
+    98→/**
+    99→ * socket.io is configured with path: '/' (protocol v1). engine.io decides
+   100→ * "is this an engine.io request" purely by URL prefix, so with path '/' it
+   101→ * would swallow the REST routes and answer them with 400s. The dispatcher
+   102→ * delegates to engine.handleRequest, so we wrap it: requests that look like
+   103→ * engine.io traffic (EIO/transport query params) go to engine.io, everything
+   104→ * else goes to the REST handler. WebSocket upgrades always carry EIO params
+   105→ * and are handled by engine.io's 'upgrade' hook, which is untouched.
+   106→ */
+   107→function patchEngineIoRouting(): void {
+   108→  const engine = io.engine as unknown as {
+   109→    handleRequest: (req: IncomingMessage, res: ServerResponse) => void
+   110→  }
+   111→  const engineHandleRequest = engine.handleRequest.bind(engine)
+   112→  engine.handleRequest = (req: IncomingMessage, res: ServerResponse) => {
+   113→    const url = req.url ?? ''
+   114→    if (url.includes('EIO=') || url.includes('transport=')) {
+   115→      engineHandleRequest(req, res)
+   116→    } else {
+   117→      void restHandler(req, res)
+   118→    }
+   119→  }
+   120→}
+   121→patchEngineIoRouting()
+   122→
+   123→io.engine.on('connection_error', (err: { code: number; message: string }) => {
+   124→  console.log(`[beam] ws handshake rejected code=${err.code} reason=${err.message}`)
+   125→})
+   126→
+   127→// ---------------------------------------------------------------------------
+   128→// Shared helpers
+   129→// ---------------------------------------------------------------------------
+   130→
+   131→const isLive = (socketId: string | null): boolean =>
+   132→  socketId !== null && io.sockets.sockets.has(socketId)
+   133→
+   134→function sessionView(session: SessionRecord) {
+   135→  return registry.view(session, isLive)
+   136→}
+   137→
+   138→function emitSocketError(socket: Socket, code: BeamErrorCode, message: string): void {
+   139→  socket.emit('beam:error', { ok: false, code, message })
+   140→}
+   141→
+   142→function clientIp(req: IncomingMessage): string {
+   143→  const xff = req.headers['x-forwarded-for']
+   144→  if (typeof xff === 'string' && xff.length > 0) {
+   145→    const first = xff.split(',')[0]?.trim()
+   146→    if (first) return first
+   147→  } else if (Array.isArray(xff) && xff.length > 0) {
+   148→    const first = xff[0]?.split(',')[0]?.trim()
+   149→    if (first) return first
+   150→  }
+   151→  return req.socket.remoteAddress ?? 'unknown'
+   152→}
+   153→
+   154→function socketIp(socket: Socket): string {
+   155→  const xff = socket.handshake.headers['x-forwarded-for']
+   156→  if (typeof xff === 'string' && xff.length > 0) {
+   157→    const first = xff.split(',')[0]?.trim()
+   158→    if (first) return first
+   159→  }
+   160→  return socket.handshake.address ?? 'unknown'
+   161→}
+   162→
+   163→function normCode(value: unknown): string | null {
+   164→  if (typeof value !== 'string') return null
+   165→  const code = value.trim().toUpperCase()
+   166→  return /^[0-9A-Z]{6}$/.test(code) ? code : null
+   167→}
+   168→
+   169→function codeFromParam(raw: string): string | null {
+   170→  let decoded = raw
+   171→  try {
+   172→    decoded = decodeURIComponent(raw)
+   173→  } catch {
+   174→    return null
+   175→  }
+   176→  return normCode(decoded)
+   177→}
+   178→
+   179→function validTransferId(value: unknown): string | null {
+   180→  return typeof value === 'string' && value.length >= 1 && value.length <= MAX_TRANSFER_ID_LENGTH
+   181→    ? value
+   182→    : null
+   183→}
+   184→
+   185→function validShortString(value: unknown, max: number): string | null {
+   186→  return typeof value === 'string' && value.length >= 1 && value.length <= max ? value : null
+   187→}
+   188→
+   189→function validSeq(value: unknown): value is number {
+   190→  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER
+   191→}
+   192→
+   193→function validDirection(value: unknown): value is 'd2p' | 'p2d' {
+   194→  return value === 'd2p' || value === 'p2d'
+   195→}
+   196→
+   197→function validMode(value: unknown): value is 'webrtc' | 'relay' {
+   198→  return value === 'webrtc' || value === 'relay'
+   199→}
+   200→
+   201→async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> {
+   202→  const chunks: Buffer[] = []
+   203→  let total = 0
+   204→  for await (const chunk of req) {
+   205→    const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : (chunk as Buffer)
+   206→    total += buf.length
+   207→    if (total > maxBytes) throw new Error('payload too large')
+   208→    chunks.push(buf)
+   209→  }
+   210→  if (total === 0) return undefined
+   211→  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+   212→}
+   213→
+   214→function sendJson(req: IncomingMessage, res: ServerResponse, status: number, body: unknown): void {
+   215→  applyCors(req, res)
+   216→  const payload = JSON.stringify(body)
+   217→  res.writeHead(status, {
+   218→    'Content-Type': 'application/json; charset=utf-8',
+   219→    'Content-Length': Buffer.byteLength(payload),
+   220→    'Cache-Control': 'no-store',
+   221→    'X-Content-Type-Options': 'nosniff',
+   222→  })
+   223→  res.end(payload)
+   224→}
+   225→
+   226→function respondPreflight(req: IncomingMessage, res: ServerResponse): void {
+   227→  applyCors(req, res)
+   228→  res.writeHead(204, {
+   229→    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+   230→    'Access-Control-Allow-Headers': req.headers['access-control-request-headers'] ?? 'Content-Type',
+   231→    'Access-Control-Max-Age': '600',
+   232→  })
+   233→  res.end()
+   234→}
+   235→
+   236→/** Forwards an event to the other peer of the sender's session. */
+   237→function relayToPeer(socket: Socket, event: string, payload: unknown): boolean {
+   238→  const ctx = socketSessions.get(socket.id)
+   239→  if (!ctx) return false
+   240→  const session = registry.get(ctx.code)
+   241→  if (!session) return false
+   242→  const peerId = ctx.role === 'host' ? session.guestSocketId : session.hostSocketId
+   243→  if (!peerId || !io.sockets.sockets.has(peerId)) return false
+   244→  io.to(peerId).emit(event, payload)
+   245→  return true
+   246→}
+   247→
+   248→/** Marks a session ended, notifies both peers, and tears down the room. */
+   249→function endSessionByCode(code: string): boolean {
+   250→  const session = registry.get(code)
+   251→  if (!session) return false
+   252→  session.status = 'ended'
+   253→  io.to(code).emit('beam:ended', { code })
+   254→  destroyRoom(code)
+   255→  session.hostSocketId = null
+   256→  session.guestSocketId = null
+   257→  session.guestDevice = null
+   258→  console.log(`[beam] session ended code=${code}`)
+   259→  return true
+   260→}
+   261→
+   262→/** Removes all sockets of a session from the room + internal maps. */
+   263→function destroyRoom(code: string): void {
+   264→  for (const [socketId, ctx] of [...socketSessions]) {
+   265→    if (ctx.code !== code) continue
+   266→    socketSessions.delete(socketId)
+   267→    chunkThrottle.drop(socketId)
+   268→    const s = io.sockets.sockets.get(socketId)
+   269→    if (s) s.leave(code)
+   270→  }
+   271→}
+   272→
+   273→// ---------------------------------------------------------------------------
+   274→// REST API
+   275→// ---------------------------------------------------------------------------
+   276→
+   277→async function restHandler(req: IncomingMessage, res: ServerResponse): Promise<void> {
+   278→  try {
+   279→    const url = new URL(req.url ?? '/', `http://localhost:${PORT}`)
+   280→    const method = req.method ?? 'GET'
+   281→    const pathname = url.pathname
+   282→
+   283→    if (method === 'OPTIONS') {
+   284→      respondPreflight(req, res)
+   285→      return
+   286→    }
+   287→
+   288→    if (method === 'POST' && pathname === '/sessions') {
+   289→      await handleCreateSession(req, res)
+   290→      return
+   291→    }
+   292→
+   293→    const endMatch = pathname.match(/^\/sessions\/([^/]+)\/end$/)
+   294→    if (method === 'POST' && endMatch) {
+   295→      await handleEndSession(req, res, url, endMatch[1]!)
+   296→      return
+   297→    }
+   298→
+   299→    const getMatch = pathname.match(/^\/sessions\/([^/]+)$/)
+   300→    if (method === 'GET' && getMatch) {
+   301→      await handleGetSession(req, res, url, getMatch[1]!)
+   302→      return
+   303→    }
+   304→
+   305→    sendJson(req, res, 404, { ok: false, code: 'NOT_FOUND', message: 'Unknown route' })
+   306→  } catch (err) {
+   307→    console.error('[beam] REST error:', err)
+   308→    if (!res.headersSent) {
+   309→      sendJson(req, res, 500, { ok: false, code: 'INTERNAL', message: 'Internal server error' })
+   310→    } else {
+   311→      res.destroy()
+   312→    }
+   313→  }
+   314→}
+   315→
+   316→async function handleCreateSession(req: IncomingMessage, res: ServerResponse): Promise<void> {
+   317→  const ip = clientIp(req)
+   318→  if (!createLimiter.check(`create:${ip}`)) {
+   319→    sendJson(req, res, 429, {
+   320→      ok: false,
+   321→      code: 'RATE_LIMITED',
+   322→      message: 'Too many sessions created, try again in a minute',
+   323→    })
+   324→    return
+   325→  }
+   326→
+   327→  let body: unknown
+   328→  try {
+   329→    body = await readJsonBody(req, MAX_JSON_BODY_BYTES)
+   330→  } catch {
+   331→    sendJson(req, res, 400, { ok: false, code: 'BAD_REQUEST', message: 'Invalid or oversized JSON body' })
+   332→    return
+   333→  }
+   334→  if (!isRecord(body)) {
+   335→    sendJson(req, res, 400, { ok: false, code: 'BAD_REQUEST', message: 'Body must be a JSON object' })
+   336→    return
+   337→  }
+   338→  const validated = validateFileManifest(body.files)
+   339→  if (!validated.ok) {
+   340→    sendJson(req, res, 400, { ok: false, code: 'BAD_REQUEST', message: validated.error })
+   341→    return
+   342→  }
+   343→
+   344→  let ttlMinutes = DEFAULT_TTL_MINUTES
+   345→  if (body.ttlMinutes !== undefined) {
+   346→    if (typeof body.ttlMinutes !== 'number' || !Number.isFinite(body.ttlMinutes)) {
+   347→      sendJson(req, res, 400, { ok: false, code: 'BAD_REQUEST', message: 'ttlMinutes must be a number' })
+   348→      return
+   349→    }
+   350→    ttlMinutes = Math.min(MAX_TTL_MINUTES, Math.max(MIN_TTL_MINUTES, Math.round(body.ttlMinutes)))
+   351→  }
+   352→
+   353→  const { session, token } = await registry.create(validated.files, ttlMinutes)
+   354→  console.log(`[beam] session created code=${session.code} ttl=${ttlMinutes}m files=${validated.files.length}`)
+   355→  // Token is returned exactly ONCE — it is only stored as a SHA-256 hash.
+   356→  sendJson(req, res, 200, { code: session.code, token, expiresAt: session.expiresAt })
+   357→}
+   358→
+   359→async function handleGetSession(
+   360→  req: IncomingMessage,
+   361→  res: ServerResponse,
+   362→  url: URL,
+   363→  rawCode: string,
+   364→): Promise<void> {
+   365→  const ip = clientIp(req)
+   366→  if (!readLimiter.check(`read:${ip}`)) {
+   367→    sendJson(req, res, 429, { ok: false, code: 'RATE_LIMITED', message: 'Too many requests, try again in a minute' })
+   368→    return
+   369→  }
+   370→  const code = codeFromParam(rawCode)
+   371→  if (!code) {
+   372→    sendJson(req, res, 400, { ok: false, code: 'BAD_REQUEST', message: 'Malformed session code' })
+   373→    return
+   374→  }
+   375→  const session = registry.get(code)
+   376→  if (!session) {
+   377→    sendJson(req, res, 404, { ok: false, code: 'NOT_FOUND', message: 'Session not found' })
+   378→    return
+   379→  }
+   380→  if (Date.now() >= session.expiresAt) {
+   381→    destroyRoom(code)
+   382→    registry.delete(code)
+   383→    sendJson(req, res, 410, { ok: false, code: 'EXPIRED', message: 'Session expired' })
+   384→    return
+   385→  }
+   386→  if (session.status === 'ended') {
+   387→    sendJson(req, res, 410, { ok: false, code: 'ENDED', message: 'Session has ended' })
+   388→    return
+   389→  }
+   390→  const token = url.searchParams.get('token') ?? ''
+   391→  if (!token || !(await registry.verifyToken(session, token))) {
+   392→    sendJson(req, res, 401, { ok: false, code: 'INVALID_TOKEN', message: 'Invalid or missing token' })
+   393→    return
+   394→  }
+   395→  sendJson(req, res, 200, { ok: true, session: sessionView(session) })
+   396→}
+   397→
+   398→async function handleEndSession(
+   399→  req: IncomingMessage,
+   400→  res: ServerResponse,
+   401→  url: URL,
+   402→  rawCode: string,
+   403→): Promise<void> {
+   404→  const ip = clientIp(req)
+   405→  if (!readLimiter.check(`read:${ip}`)) {
+   406→    sendJson(req, res, 429, { ok: false, code: 'RATE_LIMITED', message: 'Too many requests, try again in a minute' })
+   407→    return
+   408→  }
+   409→  const code = codeFromParam(rawCode)
+   410→  if (!code) {
+   411→    sendJson(req, res, 400, { ok: false, code: 'BAD_REQUEST', message: 'Malformed session code' })
+   412→    return
+   413→  }
+   414→  const session = registry.get(code)
+   415→  if (!session) {
+   416→    sendJson(req, res, 404, { ok: false, code: 'NOT_FOUND', message: 'Session not found' })
+   417→    return
+   418→  }
+   419→  if (Date.now() >= session.expiresAt) {
+   420→    destroyRoom(code)
+   421→    registry.delete(code)
+   422→    sendJson(req, res, 410, { ok: false, code: 'EXPIRED', message: 'Session expired' })
+   423→    return
+   424→  }
+   425→  const token = url.searchParams.get('token') ?? ''
+   426→  if (!token || !(await registry.verifyToken(session, token))) {
+   427→    sendJson(req, res, 401, { ok: false, code: 'INVALID_TOKEN', message: 'Invalid or missing token' })
+   428→    return
+   429→  }
+   430→  endSessionByCode(code)
+   431→  sendJson(req, res, 200, { ok: true })
+   432→}
+   433→
+   434→// ---------------------------------------------------------------------------
+   435→// Socket.io events (protocol v1)
+   436→// ---------------------------------------------------------------------------
+   437→
+   438→/** Runs every event handler inside try/catch — malformed input can never crash the process. */
+   439→function registerEvent(socket: Socket, event: string, handler: (payload: unknown) => void | Promise<void>): void {
+   440→  socket.on(event, (payload: unknown) => {
+   441→    try {
+   442→      const result = handler(payload)
+   443→      if (result instanceof Promise) {
+   444→        result.catch((err) => console.error(`[beam] handler error event=${event} socket=${socket.id}:`, err))
+   445→      }
+   446→    } catch (err) {
+   447→      console.error(`[beam] handler error event=${event} socket=${socket.id}:`, err)
+   448→    }
+   449→  })
+   450→}
+   451→
+   452→io.on('connection', (socket) => {
+   453→  registerEvent(socket, 'beam:join', (p) => handleBeamJoin(socket, p))
+   454→  registerEvent(socket, 'beam:signal', (p) => handleBeamSignal(socket, p))
+   455→  registerEvent(socket, 'beam:mode', (p) => handleBeamMode(socket, p))
+   456→  registerEvent(socket, 'beam:manifest', (p) => handleBeamManifest(socket, p))
+   457→  registerEvent(socket, 'beam:incoming', (p) => handleBeamIncoming(socket, p))
+   458→  registerEvent(socket, 'beam:transfer:request', (p) => handleTransferRequest(socket, p))
+   459→  registerEvent(socket, 'beam:transfer:start', (p) => handleTransferStart(socket, p))
+   460→  registerEvent(socket, 'beam:transfer:chunk', (p) => handleTransferChunk(socket, p))
+   461→  registerEvent(socket, 'beam:transfer:ack', (p) => handleTransferAck(socket, p))
+   462→  registerEvent(socket, 'beam:transfer:done', (p) => handleTransferDone(socket, p))
+   463→  registerEvent(socket, 'beam:transfer:cancel', (p) => handleTransferCancel(socket, p))
+   464→  registerEvent(socket, 'beam:transfer:error', (p) => handleTransferError(socket, p))
+   465→  registerEvent(socket, 'beam:end', (p) => handleBeamEnd(socket, p))
+   466→
+   467→  socket.on('disconnect', () => handleDisconnect(socket))
+   468→})
+   469→
+   470→async function handleBeamJoin(socket: Socket, payload: unknown): Promise<void> {
+   471→  // 1) Rate limit first — even malformed spam counts against the IP budget.
+   472→  if (!joinLimiter.check(`join:${socketIp(socket)}`)) {
+   473→    emitSocketError(socket, 'RATE_LIMITED', 'Too many join attempts, try again in a minute')
+   474→    return
+   475→  }
+   476→
+   477→  // 2) Payload shape.
+   478→  if (!isRecord(payload)) {
+   479→    emitSocketError(socket, 'BAD_REQUEST', 'Invalid join payload')
+   480→    return
+   481→  }
+   482→  const code = normCode(payload.code)
+   483→  const role: Role | null = payload.role === 'host' || payload.role === 'guest' ? payload.role : null
+   484→  const token =
+   485→    typeof payload.token === 'string' && payload.token.length >= 1 && payload.token.length <= 128
+   486→      ? payload.token
+   487→      : null
+   488→  if (!code || !token || !role) {
+   489→    emitSocketError(socket, 'BAD_REQUEST', 'code, token and role are required')
+   490→    return
+   491→  }
+   492→  const device = sanitizeDevice(payload.device)
+   493→
+   494→  // 3) Session state.
+   495→  const session = registry.get(code)
+   496→  if (!session) {
+   497→    emitSocketError(socket, 'NOT_FOUND', 'Session not found')
+   498→    return
+   499→  }
+   500→  if (Date.now() >= session.expiresAt) {
+   501→    destroyRoom(code)
+   502→    registry.delete(code)
+   503→    emitSocketError(socket, 'EXPIRED', 'Session expired')
+   504→    return
+   505→  }
+   506→  if (session.status === 'ended') {
+   507→    emitSocketError(socket, 'ENDED', 'Session has ended')
+   508→    return
+   509→  }
+   510→  if (!(await registry.verifyToken(session, token))) {
+   511→    emitSocketError(socket, 'INVALID_TOKEN', 'Invalid session token')
+   512→    return
+   513→  }
+   514→
+   515→  // 4) Idempotent re-join by the same socket (same code + role) is allowed.
+   516→  const existing = socketSessions.get(socket.id)
+   517→  if (existing && existing.code === code && existing.role === role) {
+   518→    socket.emit('beam:joined', { ok: true, role, session: sessionView(session), yourDevice: device })
+   519→    return
+   520→  }
+   521→
+   522→  // 5) Role slot must be free. A slot occupied by a DEAD socket may be taken
+   523→  //    over (host/guest reconnect within the same session).
+   524→  const slotOccupant = role === 'host' ? session.hostSocketId : session.guestSocketId
+   525→  if (slotOccupant && slotOccupant !== socket.id && io.sockets.sockets.has(slotOccupant)) {
+   526→    emitSocketError(socket, 'ROLE_TAKEN', `The ${role} slot is already occupied`)
+   527→    return
+   528→  }
+   529→
+   530→  // 6) If this socket was previously joined to another session, release it.
+   531→  if (existing) releaseSocket(socket.id, existing)
+   532→
+   533→  // 7) Attach.
+   534→  if (role === 'host') {
+   535→    session.hostSocketId = socket.id
+   536→  } else {
+   537→    session.guestSocketId = socket.id
+   538→    session.guestDevice = device
+   539→  }
+   540→  socketSessions.set(socket.id, { code, role, device })
+   541→  socket.join(code)
+   542→
+   543→  socket.emit('beam:joined', { ok: true, role, session: sessionView(session), yourDevice: device })
+   544→
+   545→  // 8) Notify the other peer.
+   546→  const peerId = role === 'host' ? session.guestSocketId : session.hostSocketId
+   547→  if (peerId && peerId !== socket.id && io.sockets.sockets.has(peerId)) {
+   548→    io.to(peerId).emit('beam:peer', { event: 'joined', device })
+   549→  }
+   550→  // 9) A joining guest also learns about the already-present host (device info).
+   551→  if (role === 'guest' && session.hostSocketId && session.hostSocketId !== socket.id) {
+   552→    const hostCtx = socketSessions.get(session.hostSocketId)
+   553→    if (hostCtx) socket.emit('beam:peer', { event: 'joined', device: hostCtx.device })
+   554→  }
+   555→  console.log(`[beam] peer joined code=${code} role=${role}`)
+   556→}
+   557→
+   558→function releaseSocket(socketId: string, ctx: { code: string; role: Role }): void {
+   559→  const session = registry.get(ctx.code)
+   560→  if (!session) return
+   561→  if (ctx.role === 'host' && session.hostSocketId === socketId) {
+   562→    session.hostSocketId = null
+   563→  } else if (ctx.role === 'guest' && session.guestSocketId === socketId) {
+   564→    session.guestSocketId = null
+   565→    session.guestDevice = null
+   566→  }
+   567→  const s = io.sockets.sockets.get(socketId)
+   568→  if (s) s.leave(ctx.code)
+   569→}
+   570→
+   571→function handleDisconnect(socket: Socket): void {
+   572→  const ctx = socketSessions.get(socket.id)
+   573→  if (!ctx) return
+   574→  socketSessions.delete(socket.id)
+   575→  chunkThrottle.drop(socket.id)
+   576→  const session = registry.get(ctx.code)
+   577→  if (!session) return
+   578→  if (ctx.role === 'host' && session.hostSocketId === socket.id) {
+   579→    session.hostSocketId = null
+   580→  } else if (ctx.role === 'guest' && session.guestSocketId === socket.id) {
+   581→    session.guestSocketId = null
+   582→    session.guestDevice = null
+   583→  } else {
+   584→    return // slot was taken over or already cleared — nothing to announce
+   585→  }
+   586→  // Keep the session alive until expiry so the peer can rejoin.
+   587→  const peerId = ctx.role === 'host' ? session.guestSocketId : session.hostSocketId
+   588→  if (peerId && io.sockets.sockets.has(peerId)) {
+   589→    io.to(peerId).emit('beam:peer', { event: 'left', device: null })
+   590→  }
+   591→  console.log(`[beam] peer left code=${ctx.code} role=${ctx.role}`)
+   592→}
+   593→
+   594→function handleBeamSignal(socket: Socket, payload: unknown): void {
+   595→  const ctx = socketSessions.get(socket.id)
+   596→  if (!ctx || !isRecord(payload)) return
+   597→  const code = normCode(payload.code)
+   598→  if (!code || code !== ctx.code) return
+   599→  const signal = payload.signal
+   600→  if (!isRecord(signal)) return
+   601→  // Accept {type,payload} SDP-ish objects and {type:'candidate',...} ICE;
+   602→  // reject unknown types and oversized bodies. Forwarded verbatim.
+   603→  if (
+   604→    signal.type !== undefined &&
+   605→    signal.type !== 'offer' &&
+   606→    signal.type !== 'answer' &&
+   607→    signal.type !== 'candidate'
+   608→  ) {
+   609→    return
+   610→  }
+   611→  if (JSON.stringify(signal).length > MAX_SIGNAL_BYTES) return
+   612→  relayToPeer(socket, 'beam:signal', { signal })
+   613→}
+   614→
+   615→function handleBeamMode(socket: Socket, payload: unknown): void {
+   616→  const ctx = socketSessions.get(socket.id)
+   617→  if (!ctx || !isRecord(payload)) return
+   618→  const code = normCode(payload.code)
+   619→  if (!code || code !== ctx.code) return
+   620→  if (ctx.role !== 'host') return // host only
+   621→  if (!validMode(payload.mode)) return
+   622→  relayToPeer(socket, 'beam:mode', { mode: payload.mode })
+   623→}
+   624→
+   625→function handleBeamManifest(socket: Socket, payload: unknown): void {
+   626→  const ctx = socketSessions.get(socket.id)
+   627→  if (!ctx || !isRecord(payload)) return
+   628→  const code = normCode(payload.code)
+   629→  if (!code || code !== ctx.code) return
+   630→  if (ctx.role !== 'host') return // host only
+   631→  const validated = validateFileManifest(payload.files)
+   632→  if (!validated.ok) return
+   633→  const session = registry.get(ctx.code)
+   634→  if (!session) return
+   635→  session.manifest = validated.files // stored so late-joining guests see it
+   636→  relayToPeer(socket, 'beam:manifest', { files: validated.files })
+   637→}
+   638→
+   639→function handleBeamIncoming(socket: Socket, payload: unknown): void {
+   640→  const ctx = socketSessions.get(socket.id)
+   641→  if (!ctx || !isRecord(payload)) return
+   642→  const code = normCode(payload.code)
+   643→  if (!code || code !== ctx.code) return
+   644→  if (ctx.role !== 'guest') return // guest only
+   645→  const validated = validateFileManifest(payload.files)
+   646→  if (!validated.ok) return
+   647→  relayToPeer(socket, 'beam:incoming', { files: validated.files }) // no storage
+   648→}
+   649→
+   650→function handleTransferRequest(socket: Socket, payload: unknown): void {
+   651→  const ctx = socketSessions.get(socket.id)
+   652→  if (!ctx || !isRecord(payload)) return
+   653→  const code = normCode(payload.code)
+   654→  if (!code || code !== ctx.code) return
+   655→  const transferId = validTransferId(payload.transferId)
+   656→  const fileId = validShortString(payload.fileId, 128)
+   657→  if (!transferId || !fileId || !validDirection(payload.direction)) return
+   658→  relayToPeer(socket, 'beam:transfer:request', {
+   659→    code,
+   660→    transferId,
+   661→    fileId,
+   662→    direction: payload.direction,
+   663→  })
+   664→}
+   665→
+   666→function handleTransferStart(socket: Socket, payload: unknown): void {
+   667→  const ctx = socketSessions.get(socket.id)
+   668→  if (!ctx || !isRecord(payload)) return
+   669→  const code = normCode(payload.code)
+   670→  if (!code || code !== ctx.code) return
+   671→  const transferId = validTransferId(payload.transferId)
+   672→  if (!transferId || !validDirection(payload.direction)) return
+   673→  const file = payload.file
+   674→  if (!isRecord(file)) return
+   675→  const name = file.name
+   676→  if (typeof name !== 'string' || name.length < 1 || name.length > 255) return
+   677→  const size = file.size
+   678→  if (typeof size !== 'number' || !Number.isFinite(size) || size < 0 || size > LIMITS.MAX_FILE_BYTES) return
+   679→  if (file.id !== undefined && (typeof file.id !== 'string' || file.id.length > 64)) return
+   680→  const ok = relayToPeer(socket, 'beam:transfer:start', { code, transferId, file, direction: payload.direction })
+   681→  if (!ok) {
+   682→    socket.emit('beam:transfer:error', { code, transferId, message: 'Other device disconnected — reconnect and retry' })
+   683→  }
+   684→}
+   685→
+   686→function handleTransferChunk(socket: Socket, payload: unknown): void {
+   687→  const ctx = socketSessions.get(socket.id)
+   688→  if (!ctx || !isRecord(payload)) return
+   689→  const code = normCode(payload.code)
+   690→  if (!code || code !== ctx.code) return
+   691→  const transferId = validTransferId(payload.transferId)
+   692→  if (!transferId) return
+   693→  if (!validSeq(payload.seq)) return
+   694→  const data: unknown = payload.data
+   695→  const isBinary = data instanceof ArrayBuffer || ArrayBuffer.isView(data)
+   696→  if (!isBinary) return // must be ArrayBuffer/Uint8Array
+   697→  const byteLength = (data as ArrayBuffer | ArrayBufferView).byteLength
+   698→  if (byteLength > MAX_CHUNK_BYTES) {
+   699→    socket.emit('beam:transfer:error', { code, transferId, message: 'Chunk too large' })
+   700→    return
+   701→  }
+   702→  if (!chunkThrottle.allow(socket.id)) {
+   703→    socket.emit('beam:transfer:error', { code, transferId, message: 'Rate limited' })
+   704→    return
+   705→  }
+   706→  const ok = relayToPeer(socket, 'beam:transfer:chunk', { code, transferId, seq: payload.seq, data })
+   707→  if (!ok) {
+   708→    // Peer is gone — fail fast instead of letting the sender stall on acks.
+   709→    socket.emit('beam:transfer:error', { code, transferId, message: 'Other device disconnected — reconnect and retry' })
+   710→  }
+   711→}
+   712→
+   713→function handleTransferAck(socket: Socket, payload: unknown): void {
+   714→  const ctx = socketSessions.get(socket.id)
+   715→  if (!ctx || !isRecord(payload)) return
+   716→  const code = normCode(payload.code)
+   717→  if (!code || code !== ctx.code) return
+   718→  const transferId = validTransferId(payload.transferId)
+   719→  if (!transferId || !validSeq(payload.seq)) return
+   720→  const ok = relayToPeer(socket, 'beam:transfer:ack', { code, transferId, seq: payload.seq })
+   721→  if (!ok) {
+   722→    socket.emit('beam:transfer:error', { code, transferId, message: 'Other device disconnected — reconnect and retry' })
+   723→  }
+   724→}
+   725→
+   726→function handleTransferDone(socket: Socket, payload: unknown): void {
+   727→  const ctx = socketSessions.get(socket.id)
+   728→  if (!ctx || !isRecord(payload)) return
+   729→  const code = normCode(payload.code)
+   730→  if (!code || code !== ctx.code) return
+   731→  const transferId = validTransferId(payload.transferId)
+   732→  if (!transferId) return
+   733→  relayToPeer(socket, 'beam:transfer:done', { code, transferId })
+   734→}
+   735→
+   736→function handleTransferCancel(socket: Socket, payload: unknown): void {
+   737→  const ctx = socketSessions.get(socket.id)
+   738→  if (!ctx || !isRecord(payload)) return
+   739→  const code = normCode(payload.code)
+   740→  if (!code || code !== ctx.code) return
+   741→  const transferId = validTransferId(payload.transferId)
+   742→  if (!transferId) return
+   743→  const out: Record<string, unknown> = { code, transferId }
+   744→  if (payload.reason !== undefined) {
+   745→    const reason = validShortString(payload.reason, MAX_SHORT_STRING)
+   746→    if (!reason) return
+   747→    out.reason = reason
+   748→  }
+   749→  relayToPeer(socket, 'beam:transfer:cancel', out)
+   750→}
+   751→
+   752→function handleTransferError(socket: Socket, payload: unknown): void {
+   753→  const ctx = socketSessions.get(socket.id)
+   754→  if (!ctx || !isRecord(payload)) return
+   755→  const code = normCode(payload.code)
+   756→  if (!code || code !== ctx.code) return
+   757→  const transferId = validTransferId(payload.transferId)
+   758→  const message = validShortString(payload.message, MAX_SHORT_STRING)
+   759→  if (!transferId || !message) return
+   760→  relayToPeer(socket, 'beam:transfer:error', { code, transferId, message })
+   761→}
+   762→
+   763→function handleBeamEnd(socket: Socket, payload: unknown): void {
+   764→  const ctx = socketSessions.get(socket.id)
+   765→  if (!ctx || !isRecord(payload)) return
+   766→  const code = normCode(payload.code)
+   767→  if (!code || code !== ctx.code) return
+   768→  endSessionByCode(code) // either peer may end the session
+   769→}
+   770→
+   771→// ---------------------------------------------------------------------------
+   772→// TTL sweeper
+   773→// ---------------------------------------------------------------------------
+   774→
+   775→function sweep(): void {
+   776→  const now = Date.now()
+   777→  for (const session of [...registry.all()]) {
+   778→    if (now >= session.expiresAt) {
+   779→      console.log(`[beam] session expired code=${session.code}`)
+   780→      io.to(session.code).emit('beam:expired', { code: session.code })
+   781→      destroyRoom(session.code)
+   782→      registry.delete(session.code)
+   783→      continue
+   784→    }
+   785→    // Safety net: peerless sessions are reaped after 2× their TTL.
+   786→    if (
+   787→      now >= session.createdAt + 2 * session.ttlMs &&
+   788→      !isLive(session.hostSocketId) &&
+   789→      !isLive(session.guestSocketId)
+   790→    ) {
+   791→      console.log(`[beam] session reaped code=${session.code} (no peers after 2x TTL)`)
+   792→      destroyRoom(session.code)
+   793→      registry.delete(session.code)
+   794→    }
+   795→  }
+   796→  createLimiter.sweep()
+   797→  readLimiter.sweep()
+   798→  joinLimiter.sweep()
+   799→}
+   800→
+   801→const sweeper = setInterval(sweep, SWEEP_INTERVAL_MS)
+   802→sweeper.unref?.()
+   803→
+   804→// ---------------------------------------------------------------------------
+   805→// Start + graceful shutdown
+   806→// ---------------------------------------------------------------------------
+   807→
+   808→server.listen(PORT, () => {
+   809→  console.log('beam session service listening on :3003')
+   810→})
+   811→
+   812→let shuttingDown = false
+   813→function shutdown(signal: string): void {
+   814→  if (shuttingDown) return
+   815→  shuttingDown = true
+   816→  console.log(`[beam] ${signal} received, shutting down`)
+   817→  clearInterval(sweeper)
+   818→  io.disconnectSockets(true)
+   819→  io.close(() => process.exit(0))
+   820→  server.close(() => undefined)
+   821→  setTimeout(() => process.exit(0), 2000).unref()
+   822→}
+   823→
+   824→process.on('SIGINT', () => shutdown('SIGINT'))
+   825→process.on('SIGTERM', () => shutdown('SIGTERM'))
+   826→process.on('uncaughtException', (err) => console.error('[beam] uncaught exception:', err))
+   827→process.on('unhandledRejection', (reason) => console.error('[beam] unhandled rejection:', reason))
+   828→

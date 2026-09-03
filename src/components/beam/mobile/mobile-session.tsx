@@ -29,6 +29,7 @@ import { formatBytes, formatCountdown, formatSpeed } from '@/lib/beam/format'
 import { Logo } from '@/components/beam/logo'
 import { FileTypeIcon } from '@/components/beam/desktop/dropzone'
 import { TransferRowItem } from '@/components/beam/desktop/session-panel'
+import { NotesPanel } from '@/components/beam/shared/notes-panel'
 import { useCountdown } from '@/hooks/use-countdown'
 import { useSoundMuted } from '@/hooks/use-sound-muted'
 import { cn } from '@/lib/utils'
@@ -299,6 +300,9 @@ function ConnectedView() {
 
       {/* Send: files to desktop */}
       <SendToDesktop disabled={!peerDevice || mode === 'none'} rows={p2dRows} active={p2dActive} />
+
+      {/* Text notes — works over relay or P2P, independent of file transfers */}
+      <NotesPanel variant="mobile" />
 
       {mode === 'relay' && (
         <p className="flex items-start gap-2 rounded-xl bg-muted/60 px-3.5 py-2.5 text-xs text-muted-foreground">

@@ -1,0 +1,1379 @@
+     1→'use client'
+     2→
+     3→import { create } from 'zustand'
+     4→import { io, type Socket } from 'socket.io-client'
+     5→import {
+     6→  LIMITS,
+     7→  type DeviceInfo,
+     8→  type FileMeta,
+     9→  type Role,
+    10→  type TransferDirection,
+    11→  type TransportMode,
+    12→} from './protocol'
+    13→import { SIGNALING_WS_URL } from './config'
+    14→import {
+    15→  CHANNEL_D2P,
+    16→  CHANNEL_P2D,
+    17→  createPeerConnection,
+    18→  waitForDrain,
+    19→  waitUntilOpen,
+    20→} from './webrtc'
+    21→import { genId, isBlockedType, makePreviewUrl, validateFiles } from './files'
+    22→import { getDeviceInfo, describeDevice } from './device'
+    23→import { recordHistory } from './history'
+    24→import { playChime } from './chime'
+    25→import * as api from './api'
+    26→
+    27→/* ------------------------------------------------------------------ */
+    28→/* Types                                                              */
+    29→/* ------------------------------------------------------------------ */
+    30→
+    31→export type BeamPhase =
+    32→  | 'idle' // desktop: no session yet
+    33→  | 'creating' // desktop: creating session
+    34→  | 'waiting' // desktop: QR shown, waiting for phone
+    35→  | 'opening' // phone: validating QR link
+    36→  | 'connecting' // both: negotiating transport
+    37→  | 'connected' // both: transport ready, transfers allowed
+    38→  | 'expired' // session expired
+    39→  | 'ended' // session ended
+    40→  | 'failed' // unrecoverable error (retry available)
+    41→  | 'invalid' // phone: bad/unknown QR
+    42→  | 'lost' // peer connection lost (phone retries; desktop returns to waiting)
+    43→
+    44→export interface SelectedFile {
+    45→  id: string
+    46→  name: string
+    47→  size: number
+    48→  type: string
+    49→  file: File
+    50→  previewUrl: string | null
+    51→}
+    52→
+    53→export interface TransferRow {
+    54→  id: string
+    55→  fileId: string
+    56→  name: string
+    57→  size: number
+    58→  type: string
+    59→  direction: TransferDirection
+    60→  status: 'queued' | 'active' | 'done' | 'error' | 'canceled'
+    61→  transferred: number
+    62→  speed: number
+    63→  etaSec: number | null
+    64→  startedAt: number | null
+    65→  error: string | null
+    66→  transport: 'webrtc' | 'relay' | null
+    67→}
+    68→
+    69→export interface ReceivedFile {
+    70→  id: string
+    71→  name: string
+    72→  size: number
+    73→  type: string
+    74→  url: string
+    75→  direction: TransferDirection
+    76→  receivedAt: number
+    77→}
+    78→
+    79→export interface BeamSession {
+    80→  code: string
+    81→  token: string
+    82→  expiresAt: number
+    83→  joinUrl: string
+    84→}
+    85→
+    86→export interface BeamState {
+    87→  role: Role | null
+    88→  phase: BeamPhase
+    89→  error: { title: string; message: string } | null
+    90→  session: BeamSession | null
+    91→  selectedFiles: SelectedFile[]
+    92→  manifest: FileMeta[]
+    93→  mobileFiles: SelectedFile[]
+    94→  incomingFiles: FileMeta[]
+    95→  transfers: Record<string, TransferRow>
+    96→  received: ReceivedFile[]
+    97→  mode: TransportMode | 'none'
+    98→  peerDevice: DeviceInfo | null
+    99→  connectedAt: number | null
+   100→  stats: { filesTransferred: number; totalData: number }
+   101→}
+   102→
+   103→interface BeamActions {
+   104→  addFiles(files: FileList | File[]): void
+   105→  removeSelectedFile(id: string): void
+   106→  reorderSelectedFiles(fromId: string, toId: string): void
+   107→  createNewSession(): Promise<void>
+   108→  endSession(): Promise<void>
+   109→  resetAll(): void
+   110→  openSession(code: string, token: string): Promise<void>
+   111→  reconnect(): void
+   112→  requestDownload(fileId: string): void
+   113→  downloadAll(): void
+   114→  addMobileFiles(files: FileList | File[]): void
+   115→  removeMobileFile(id: string): void
+   116→  saveReceived(id: string): void
+   117→  shareReceived(id: string): Promise<void>
+   118→  dismissReceived(id: string): void
+   119→  retryTransfer(transferId: string): void
+   120→  cancelTransfer(transferId: string): void
+   121→  markExpiredIfDue(): void
+   122→}
+   123→
+   124→export type BeamStore = BeamState & BeamActions
+   125→
+   126→/* ------------------------------------------------------------------ */
+   127→/* Module-level runtime (socket, peer, queues)                        */
+   128→/* ------------------------------------------------------------------ */
+   129→
+   130→let socket: Socket | null = null
+   131→let pc: RTCPeerConnection | null = null
+   132→let dcD2P: RTCDataChannel | null = null // host sends / guest receives
+   133→let dcP2D: RTCDataChannel | null = null // guest sends / host receives
+   134→let inboundDcTransfer: string | null = null
+   135→let p2pTimer: ReturnType<typeof setTimeout> | null = null
+   136→let guestTimer: ReturnType<typeof setTimeout> | null = null
+   137→let joiningCode: string | null = null // guards openSession re-entry
+   138→let joinSentFor: string | null = null // guards duplicate beam:join emits
+   139→let joinAttempts = 0
+   140→
+   141→const fileObjects = new Map<string, File>() // this device's outbound files
+   142→const sinks = new Map<
+   143→  string,
+   144→  { parts: ArrayBuffer[]; received: number; meta: FileMeta; direction: TransferDirection }
+   145→>()
+   146→const ackWaiters = new Map<string, Array<{ resolve: () => void; timer: ReturnType<typeof setTimeout> }>>()
+   147→const relayInflight = new Map<string, number>() // transferId → true unacked-chunk count
+   148→const samples = new Map<string, { t: number; b: number }[]>()
+   149→const lastSpeed = new Map<string, number>()
+   150→const flushTimes = new Map<string, number>()
+   151→const canceledIds = new Set<string>()
+   152→
+   153→/** QA instrumentation (read via window.__beam.debug). */
+   154→const beamDebug = {
+   155→  chunksHandled: 0,
+   156→  noteProgressCalls: 0,
+   157→  flushes: 0,
+   158→  storeWrites: 0,
+   159→}
+   160→
+   161→let sendQueue: { transferId: string; fileId: string }[] = []
+   162→let sendActive = false
+   163→
+   164→/* ------------------------------------------------------------------ */
+   165→/* Small utilities                                                    */
+   166→/* ------------------------------------------------------------------ */
+   167→
+   168→/** Decoupled notifications: engine → <BeamToaster /> via DOM events. */
+   169→export function notify(type: 'success' | 'error' | 'info', title: string, description?: string): void {
+   170→  if (typeof window === 'undefined') return
+   171→  window.dispatchEvent(new CustomEvent('beam:notify', { detail: { type, title, description } }))
+   172→}
+   173→
+   174→function emitCode<T extends object>(event: string, payload: T): void {
+   175→  if (!socket || !socket.connected) return
+   176→  const session = useBeamStore.getState().session
+   177→  if (!session) return
+   178→  socket.emit(event, { code: session.code, ...payload })
+   179→}
+   180→
+   181→function patchTransfer(id: string, patch: Partial<TransferRow>): void {
+   182→  useBeamStore.setState((state) => {
+   183→    const row = state.transfers[id]
+   184→    if (!row) return state
+   185→    beamDebug.storeWrites++
+   186→    return { transfers: { ...state.transfers, [id]: { ...row, ...patch } } }
+   187→  })
+   188→}
+   189→
+   190→function upsertRow(id: string, row: TransferRow): void {
+   191→  useBeamStore.setState((state) => ({
+   192→    transfers: { ...state.transfers, [id]: { ...state.transfers[id], ...row } },
+   193→  }))
+   194→}
+   195→
+   196→/** Host re-publishes the download manifest (order included) to the peer. */
+   197→function publishManifestIfHost(): void {
+   198→  const st = useBeamStore.getState()
+   199→  if (st.session && st.role === 'host' && ['waiting', 'connecting', 'connected'].includes(st.phase)) {
+   200→    emitCode('beam:manifest', {
+   201→      files: st.selectedFiles.map((f) => ({ id: f.id, name: f.name, size: f.size, type: f.type })),
+   202→    })
+   203→  }
+   204→}
+   205→
+   206→function noteProgress(id: string, transferred: number, size: number): void {
+   207→  beamDebug.noteProgressCalls++
+   208→  const now = Date.now()
+   209→  const arr = samples.get(id) ?? []
+   210→  arr.push({ t: now, b: transferred })
+   211→  while (arr.length > 2 && now - arr[0].t > 4000) arr.shift()
+   212→  samples.set(id, arr)
+   213→
+   214→  let speed = lastSpeed.get(id) ?? 0
+   215→  const first = arr[0]
+   216→  const last = arr[arr.length - 1]
+   217→  if (arr.length >= 2 && last.t - first.t > 300) {
+   218→    const inst = (last.b - first.b) / ((last.t - first.t) / 1000)
+   219→    speed = speed === 0 ? inst : speed * 0.6 + inst * 0.4
+   220→    lastSpeed.set(id, speed)
+   221→  }
+   222→
+   223→  const lastFlush = flushTimes.get(id) ?? 0
+   224→  if (now - lastFlush >= 120) {
+   225→    flushTimes.set(id, now)
+   226→    beamDebug.flushes++
+   227→    patchTransfer(id, {
+   228→      transferred,
+   229→      speed,
+   230→      etaSec: speed > 0 && transferred < size ? (size - transferred) / speed : null,
+   231→    })
+   232→  }
+   233→}
+   234→
+   235→function triggerDownload(url: string, name: string): void {
+   236→  const a = document.createElement('a')
+   237→  a.href = url
+   238→  a.download = name
+   239→  a.rel = 'noopener'
+   240→  document.body.appendChild(a)
+   241→  a.click()
+   242→  a.remove()
+   243→}
+   244→
+   245→/* ------------------------------------------------------------------ */
+   246→/* Receiving                                                          */
+   247→/* ------------------------------------------------------------------ */
+   248→
+   249→function handleStart(transferId: string, file: FileMeta, direction: TransferDirection): void {
+   250→  canceledIds.delete(transferId)
+   251→  sinks.set(transferId, { parts: [], received: 0, meta: file, direction })
+   252→  samples.delete(transferId)
+   253→  lastSpeed.delete(transferId)
+   254→  upsertRow(transferId, {
+   255→    id: transferId,
+   256→    fileId: file.id,
+   257→    name: file.name,
+   258→    size: file.size,
+   259→    type: file.type,
+   260→    direction,
+   261→    status: 'active',
+   262→    transferred: 0,
+   263→    speed: 0,
+   264→    etaSec: null,
+   265→    startedAt: Date.now(),
+   266→    error: null,
+   267→    transport: useBeamStore.getState().mode === 'webrtc' ? 'webrtc' : 'relay',
+   268→  })
+   269→}
+   270→
+   271→function handleChunk(transferId: string, data: ArrayBuffer): void {
+   272→  beamDebug.chunksHandled++
+   273→  const sink = sinks.get(transferId)
+   274→  if (!sink || canceledIds.has(transferId)) return
+   275→  sink.parts.push(data)
+   276→  sink.received += data.byteLength
+   277→  noteProgress(transferId, sink.received, sink.meta.size)
+   278→  // Ack every chunk — cheap, and the relay sender uses it for flow control.
+   279→  emitCode('beam:transfer:ack', { transferId, seq: 0 })
+   280→}
+   281→
+   282→function handleDone(transferId: string): void {
+   283→  const sink = sinks.get(transferId)
+   284→  if (!sink) return
+   285→  sinks.delete(transferId)
+   286→  inboundDcTransfer = null
+   287→  const blob = new Blob(sink.parts, { type: sink.meta.type || 'application/octet-stream' })
+   288→  const url = URL.createObjectURL(blob)
+   289→  const state = useBeamStore.getState()
+   290→
+   291→  const received: ReceivedFile = {
+   292→    id: transferId,
+   293→    name: sink.meta.name,
+   294→    size: sink.meta.size,
+   295→    type: sink.meta.type,
+   296→    url,
+   297→    direction: sink.direction,
+   298→    receivedAt: Date.now(),
+   299→  }
+   300→
+   301→  if (state.role === 'guest') triggerDownload(url, sink.meta.name)
+   302→
+   303→  useBeamStore.setState((s) => ({
+   304→    transfers: {
+   305→      ...s.transfers,
+   306→      [transferId]: {
+   307→        ...s.transfers[transferId],
+   308→        status: 'done',
+   309→        transferred: sink.meta.size,
+   310→        speed: 0,
+   311→        etaSec: 0,
+   312→      },
+   313→    },
+   314→    received: [received, ...s.received.filter((r) => r.id !== transferId)],
+   315→    stats: {
+   316→      filesTransferred: s.stats.filesTransferred + 1,
+   317→      totalData: s.stats.totalData + sink.meta.size,
+   318→    },
+   319→  }))
+   320→
+   321→  recordHistory({
+   322→    name: sink.meta.name,
+   323→    size: sink.meta.size,
+   324→    direction: sink.direction,
+   325→    status: 'completed',
+   326→    sessionCode: state.session?.code ?? '',
+   327→  })
+   328→
+   329→  notify(
+   330→    'success',
+   331→    state.role === 'guest' ? 'Download completed' : 'File received',
+   332→    sink.meta.name,
+   333→  )
+   334→  playChime()
+   335→  pumpSend()
+   336→}
+   337→
+   338→function handleTransferError(transferId: string, message: string): void {
+   339→  sinks.delete(transferId)
+   340→  ackWaiters.delete(transferId)
+   341→  relayInflight.delete(transferId)
+   342→  canceledIds.delete(transferId)
+   343→  patchTransfer(transferId, { status: 'error', error: message, speed: 0 })
+   344→  notify('error', 'Transfer failed', message)
+   345→  recordHistory({
+   346→    name: useBeamStore.getState().transfers[transferId]?.name ?? 'Unknown file',
+   347→    size: useBeamStore.getState().transfers[transferId]?.size ?? 0,
+   348→    direction: useBeamStore.getState().transfers[transferId]?.direction ?? 'd2p',
+   349→    status: 'failed',
+   350→    sessionCode: useBeamStore.getState().session?.code ?? '',
+   351→  })
+   352→  pumpSend()
+   353→}
+   354→
+   355→function handleCancel(transferId: string): void {
+   356→  canceledIds.add(transferId)
+   357→  sinks.delete(transferId)
+   358→  ackWaiters.delete(transferId)
+   359→  relayInflight.delete(transferId)
+   360→  patchTransfer(transferId, { status: 'canceled', speed: 0 })
+   361→  pumpSend()
+   362→}
+   363→
+   364→/* ------------------------------------------------------------------ */
+   365→/* Sending                                                            */
+   366→/* ------------------------------------------------------------------ */
+   367→
+   368→function enqueueSend(transferId: string, fileId: string): void {
+   369→  sendQueue.push({ transferId, fileId })
+   370→  pumpSend()
+   371→}
+   372→
+   373→function pumpSend(): void {
+   374→  if (sendActive || sendQueue.length === 0) return
+   375→  const next = sendQueue.shift()
+   376→  if (!next) return
+   377→  sendActive = true
+   378→  const { transferId, fileId } = next
+   379→  const file = fileObjects.get(fileId)
+   380→  if (!file) {
+   381→    emitCode('beam:transfer:error', { transferId, message: 'File is no longer available on this device' })
+   382→    patchTransfer(transferId, { status: 'error', error: 'File no longer available' })
+   383→    sendActive = false
+   384→    pumpSend()
+   385→    return
+   386→  }
+   387→  const meta: FileMeta = { id: fileId, name: file.name, size: file.size, type: file.type }
+   388→  processSend(transferId, file, meta)
+   389→    .catch((err) => {
+   390→      const message = err instanceof Error ? err.message : 'Transfer failed'
+   391→      emitCode('beam:transfer:error', { transferId, message })
+   392→      patchTransfer(transferId, { status: 'error', error: message, speed: 0 })
+   393→      notify('error', 'Transfer failed', `${file.name} — ${message}`)
+   394→    })
+   395→    .finally(() => {
+   396→      sendActive = false
+   397→      pumpSend()
+   398→    })
+   399→}
+   400→
+   401→async function processSend(transferId: string, file: File, meta: FileMeta): Promise<void> {
+   402→  if (canceledIds.has(transferId)) {
+   403→    patchTransfer(transferId, { status: 'canceled' })
+   404→    return
+   405→  }
+   406→  patchTransfer(transferId, { status: 'active', startedAt: Date.now(), error: null })
+   407→
+   408→  const useDC = useBeamStore.getState().mode === 'webrtc' && getOutboundChannel()?.readyState === 'open'
+   409→  if (useDC) {
+   410→    patchTransfer(transferId, { transport: 'webrtc' })
+   411→    try {
+   412→      await sendOverDC(transferId, file, meta)
+   413→      finishSend(transferId, file, meta)
+   414→      return
+   415→    } catch (err) {
+   416→      if (canceledIds.has(transferId)) return patchTransfer(transferId, { status: 'canceled' })
+   417→      // Data channel broke mid-transfer — one clean retry over the relay.
+   418→      notify('info', 'Direct connection lost', 'Falling back to secure relay for this file…')
+   419→    }
+   420→  }
+   421→
+   422→  patchTransfer(transferId, { transport: 'relay' })
+   423→  await sendOverRelay(transferId, file, meta)
+   424→  finishSend(transferId, file, meta)
+   425→}
+   426→
+   427→function finishSend(transferId: string, file: File, meta: FileMeta): void {
+   428→  if (canceledIds.has(transferId)) {
+   429→    patchTransfer(transferId, { status: 'canceled' })
+   430→    return
+   431→  }
+   432→  const state = useBeamStore.getState()
+   433→  useBeamStore.setState((s) => ({
+   434→    transfers: {
+   435→      ...s.transfers,
+   436→      [transferId]: {
+   437→        ...s.transfers[transferId],
+   438→        status: 'done',
+   439→        transferred: meta.size,
+   440→        speed: 0,
+   441→        etaSec: 0,
+   442→      },
+   443→    },
+   444→    stats: {
+   445→      filesTransferred: s.stats.filesTransferred + 1,
+   446→      totalData: s.stats.totalData + meta.size,
+   447→    },
+   448→  }))
+   449→  recordHistory({
+   450→    name: meta.name,
+   451→    size: meta.size,
+   452→    direction: state.role === 'host' ? 'd2p' : 'p2d',
+   453→    status: 'completed',
+   454→    sessionCode: state.session?.code ?? '',
+   455→  })
+   456→  playChime()
+   457→  notify('success', 'Transfer completed', file.name)
+   458→}
+   459→
+   460→/**
+   461→ * WebRTC SCTP chunk size. 64 KB when BOTH ends are Chromium-based (their SCTP
+   462→ * stack handles it fine and throughput roughly doubles); anything else falls
+   463→ * back to the conservative 16 KB cross-browser default. Receiver appends
+   464→ * chunks in arrival order (seq is informational), so no negotiation handshake
+   465→ * is needed — the sender's choice is self-contained.
+   466→ */
+   467→const CHROMIUM_BROWSERS = new Set(['Chrome', 'Edge', 'Opera', 'Samsung Internet', 'Chromium'])
+   468→function getWebrtcChunkSize(): number {
+   469→  const peerBrowser = useBeamStore.getState().peerDevice?.browser
+   470→  if (!peerBrowser) return LIMITS.CHUNK_SIZE_WEBRTC
+   471→  const mine = getDeviceInfo().browser
+   472→  return CHROMIUM_BROWSERS.has(peerBrowser) && CHROMIUM_BROWSERS.has(mine)
+   473→    ? 64 * 1024
+   474→    : LIMITS.CHUNK_SIZE_WEBRTC
+   475→}
+   476→
+   477→async function sendOverDC(transferId: string, file: File, meta: FileMeta): Promise<void> {
+   478→  const dc = getOutboundChannel()
+   479→  if (!dc || dc.readyState !== 'open') throw new Error('Direct channel not open')
+   480→  dc.send(JSON.stringify({ kind: 'start', transferId, file: meta }))
+   481→
+   482→  const CHUNK = getWebrtcChunkSize()
+   483→  let offset = 0
+   484→  while (offset < file.size) {
+   485→    if (dc.readyState !== 'open') throw new Error('Connection lost during transfer')
+   486→    if (canceledIds.has(transferId)) throw new CancelledError()
+   487→    if (dc.bufferedAmount > LIMITS.BUFFER_HIGH_WATER) await waitForDrain(dc)
+   488→    const buf = await file.slice(offset, offset + CHUNK).arrayBuffer()
+   489→    dc.send(buf)
+   490→    offset += buf.byteLength
+   491→    noteProgress(transferId, offset, file.size)
+   492→  }
+   493→  dc.send(JSON.stringify({ kind: 'done', transferId }))
+   494→}
+   495→
+   496→class CancelledError extends Error {
+   497→  constructor() {
+   498→    super('Cancelled')
+   499→  }
+   500→}
+   501→
+   502→async function sendOverRelay(transferId: string, file: File, meta: FileMeta): Promise<void> {
+   503→  emitCode('beam:transfer:start', { transferId, file: meta, direction: useBeamStore.getState().role === 'host' ? 'd2p' : 'p2d' })
+   504→
+   505→  const CHUNK = LIMITS.CHUNK_SIZE_RELAY
+   506→  let offset = 0
+   507→  relayInflight.set(transferId, 0)
+   508→
+   509→  while (offset < file.size) {
+   510→    if (canceledIds.has(transferId)) throw new CancelledError()
+   511→    if (!socket || !socket.connected) throw new Error('Connection lost during transfer')
+   512→    if ((relayInflight.get(transferId) ?? 0) >= LIMITS.RELAY_WINDOW) {
+   513→      await waitRelayBelow(transferId, LIMITS.RELAY_WINDOW)
+   514→    }
+   515→    const buf = await file.slice(offset, offset + CHUNK).arrayBuffer()
+   516→    emitCode('beam:transfer:chunk', { transferId, seq: offset / CHUNK, data: buf })
+   517→    offset += buf.byteLength
+   518→    relayInflight.set(transferId, (relayInflight.get(transferId) ?? 0) + 1)
+   519→    noteProgress(transferId, offset, file.size)
+   520→  }
+   521→
+   522→  // Drain: wait until every sent chunk has been acknowledged. The unacked
+   523→  // count is decremented by the ack handler even when no waiter is pending,
+   524→  // so acks that arrived early are never "lost".
+   525→  while ((relayInflight.get(transferId) ?? 0) > 0) {
+   526→    await waitRelayBelow(transferId, 1)
+   527→  }
+   528→  relayInflight.delete(transferId)
+   529→  emitCode('beam:transfer:done', { transferId })
+   530→}
+   531→
+   532→/**
+   533→ * Resolve when the unacked count drops below `threshold`. Each incoming ack
+   534→ * wakes exactly one waiter; callers re-check their predicate after waking.
+   535→ */
+   536→function waitRelayBelow(transferId: string, threshold: number): Promise<void> {
+   537→  // Predicate already satisfied (e.g. acks arrived before we started waiting)?
+   538→  if ((relayInflight.get(transferId) ?? 0) < threshold) {
+   539→    return Promise.resolve()
+   540→  }
+   541→  return new Promise((resolve, reject) => {
+   542→    const entry = {
+   543→      resolve,
+   544→      timer: setTimeout(() => {
+   545→        const q = ackWaiters.get(transferId)
+   546→        if (q) ackWaiters.set(transferId, q.filter((e) => e !== entry))
+   547→        reject(new Error('Transfer stalled — no acknowledgement from receiver'))
+   548→      }, 30_000),
+   549→    }
+   550→    const q = ackWaiters.get(transferId) ?? []
+   551→    q.push(entry)
+   552→    ackWaiters.set(transferId, q)
+   553→  })
+   554→}
+   555→
+   556→function resolveAcks(transferId: string): void {
+   557→  // Every ack decrements the true unacked count — even without a pending
+   558→  // waiter — so early acks are never lost.
+   559→  const cur = relayInflight.get(transferId)
+   560→  if (cur !== undefined && cur > 0) relayInflight.set(transferId, cur - 1)
+   561→
+   562→  const q = ackWaiters.get(transferId)
+   563→  const entry = q?.shift()
+   564→  if (entry) {
+   565→    clearTimeout(entry.timer)
+   566→    entry.resolve()
+   567→    if (q && q.length === 0) ackWaiters.delete(transferId)
+   568→  }
+   569→}
+   570→
+   571→function getOutboundChannel(): RTCDataChannel | null {
+   572→  return useBeamStore.getState().role === 'host' ? dcD2P : dcP2D
+   573→}
+   574→
+   575→/* ------------------------------------------------------------------ */
+   576→/* WebRTC wiring                                                      */
+   577→/* ------------------------------------------------------------------ */
+   578→
+   579→function wireChannel(dc: RTCDataChannel, label: string): void {
+   580→  dc.binaryType = 'arraybuffer'
+   581→  dc.onmessage = (e) => {
+   582→    try {
+   583→      if (typeof e.data === 'string') {
+   584→        const msg = JSON.parse(e.data) as {
+   585→          kind: 'start' | 'done' | 'cancel'
+   586→          transferId: string
+   587→          file?: FileMeta
+   588→        }
+   589→        if (msg.kind === 'start' && msg.file) {
+   590→          inboundDcTransfer = msg.transferId
+   591→          const direction: TransferDirection = label === CHANNEL_D2P ? 'd2p' : 'p2d'
+   592→          handleStart(msg.transferId, msg.file, direction)
+   593→        } else if (msg.kind === 'done') {
+   594→          handleDone(msg.transferId)
+   595→        } else if (msg.kind === 'cancel') {
+   596→          handleCancel(msg.transferId)
+   597→        }
+   598→      } else if (e.data instanceof ArrayBuffer) {
+   599→        if (inboundDcTransfer) handleChunk(inboundDcTransfer, e.data)
+   600→      } else if (e.data instanceof Blob) {
+   601→        // Safari may deliver Blob unless binaryType was set before messages arrived
+   602→        e.data.arrayBuffer().then((buf) => {
+   603→          if (inboundDcTransfer) handleChunk(inboundDcTransfer, buf)
+   604→        })
+   605→      }
+   606→    } catch {
+   607→      // ignore malformed control frames
+   608→    }
+   609→  }
+   610→  dc.onclose = () => {
+   611→    if (label === CHANNEL_D2P) dcD2P = null
+   612→    else dcP2D = null
+   613→  }
+   614→}
+   615→
+   616→function destroyPeer(): void {
+   617→  if (p2pTimer) {
+   618→    clearTimeout(p2pTimer)
+   619→    p2pTimer = null
+   620→  }
+   621→  try {
+   622→    pc?.close()
+   623→  } catch {
+   624→    // noop
+   625→  }
+   626→  pc = null
+   627→  dcD2P = null
+   628→  dcP2D = null
+   629→  inboundDcTransfer = null
+   630→}
+   631→
+   632→function switchMode(mode: TransportMode): void {
+   633→  const st = useBeamStore.getState()
+   634→  if (st.mode !== 'none' || st.phase === 'expired' || st.phase === 'ended') return
+   635→  useBeamStore.setState({ mode, phase: 'connected', connectedAt: Date.now() })
+   636→  emitCode('beam:mode', { mode })
+   637→  if (p2pTimer) {
+   638→    clearTimeout(p2pTimer)
+   639→    p2pTimer = null
+   640→  }
+   641→  if (guestTimer) {
+   642→    clearTimeout(guestTimer)
+   643→    guestTimer = null
+   644→  }
+   645→}
+   646→
+   647→async function hostStartPeerConnection(): Promise<void> {
+   648→  destroyPeer()
+   649→  const state = useBeamStore.getState()
+   650→  if (!state.session) return
+   651→  useBeamStore.setState({ phase: 'connecting', mode: 'none' })
+   652→
+   653→  const peer = createPeerConnection()
+   654→  pc = peer
+   655→
+   656→  const out = peer.createDataChannel(CHANNEL_D2P, { ordered: true })
+   657→  dcD2P = out
+   658→  wireChannel(out, CHANNEL_D2P)
+   659→  out.onopen = () => {
+   660→    // Both channels negotiated in the same SDP — outbound open ⇒ ready.
+   661→    switchMode('webrtc')
+   662→  }
+   663→
+   664→  peer.ondatachannel = (e) => {
+   665→    if (e.channel.label === CHANNEL_P2D) {
+   666→      dcP2D = e.channel
+   667→      wireChannel(e.channel, CHANNEL_P2D)
+   668→    }
+   669→  }
+   670→  peer.onicecandidate = (e) => {
+   671→    if (e.candidate) emitCode('beam:signal', { signal: { type: 'candidate', payload: e.candidate.toJSON() } })
+   672→  }
+   673→  peer.onconnectionstatechange = () => {
+   674→    if (peer.connectionState === 'failed' && useBeamStore.getState().mode === 'none') {
+   675→      switchMode('relay')
+   676→    }
+   677→  }
+   678→
+   679→  const offer = await peer.createOffer()
+   680→  await peer.setLocalDescription(offer)
+   681→  emitCode('beam:signal', { signal: { type: 'offer', payload: peer.localDescription } })
+   682→
+   683→  p2pTimer = setTimeout(() => {
+   684→    if (useBeamStore.getState().mode === 'none') switchMode('relay')
+   685→  }, LIMITS.P2P_TIMEOUT_MS)
+   686→}
+   687→
+   688→async function guestAcceptOffer(offer: RTCSessionDescriptionInit): Promise<void> {
+   689→  destroyPeer()
+   690→  const peer = createPeerConnection()
+   691→  pc = peer
+   692→  useBeamStore.setState({ phase: 'connecting' })
+   693→
+   694→  peer.ondatachannel = (e) => {
+   695→    if (e.channel.label === CHANNEL_D2P) {
+   696→      dcD2P = e.channel
+   697→      wireChannel(e.channel, CHANNEL_D2P)
+   698→    } else if (e.channel.label === CHANNEL_P2D) {
+   699→      dcP2D = e.channel
+   700→      wireChannel(e.channel, CHANNEL_P2D)
+   701→    }
+   702→  }
+   703→  peer.onicecandidate = (e) => {
+   704→    if (e.candidate) emitCode('beam:signal', { signal: { type: 'candidate', payload: e.candidate.toJSON() } })
+   705→  }
+   706→
+   707→  await peer.setRemoteDescription(offer)
+   708→  const answer = await peer.createAnswer()
+   709→  await peer.setLocalDescription(answer)
+   710→  emitCode('beam:signal', { signal: { type: 'answer', payload: peer.localDescription } })
+   711→}
+   712→
+   713→/* ------------------------------------------------------------------ */
+   714→/* Socket lifecycle                                                   */
+   715→/* ------------------------------------------------------------------ */
+   716→
+   717→function ensureSocket(): Socket {
+   718→  if (socket) return socket
+   719→  socket = io(SIGNALING_WS_URL, {
+   720→    path: '/',
+   721→    transports: ['websocket', 'polling'],
+   722→    reconnection: true,
+   723→    reconnectionAttempts: 10,
+   724→    reconnectionDelay: 1000,
+   725→    timeout: 10000,
+   726→  })
+   727→
+   728→  socket.on('connect', () => {
+   729→    joinAttempts = 0
+   730→    emitJoin()
+   731→  })
+   732→  socket.on('beam:joined', (data: { ok: true; role: Role; session: { code: string; expiresAt: number; status: string; fileManifest: FileMeta[]; hostConnected: boolean; guestConnected: boolean; guestDevice: DeviceInfo | null } }) => {
+   733→    const st = useBeamStore.getState()
+   734→    if (!data?.ok || !st.session || data.role !== st.role) return
+   735→    joiningCode = null
+   736→    joinSentFor = null
+   737→    useBeamStore.setState({ manifest: data.session.fileManifest ?? [] })
+   738→
+   739→    if (st.role === 'host') {
+   740→      if (st.phase !== 'connected') useBeamStore.setState({ phase: 'waiting' })
+   741→    } else {
+   742→      if (st.phase === 'opening' || st.phase === 'lost') {
+   743→        useBeamStore.setState({ phase: 'connecting' })
+   744→        if (guestTimer) clearTimeout(guestTimer)
+   745→        guestTimer = setTimeout(() => {
+   746→          if (useBeamStore.getState().phase === 'connecting') {
+   747→            useBeamStore.setState({
+   748→              phase: 'lost',
+   749→              error: { title: 'Connection timed out', message: 'Could not reach the desktop. Make sure the Beam tab is still open on your computer, then try again.' },
+   750→            })
+   751→          }
+   752→        }, 30_000)
+   753→      }
+   754→    }
+   755→  })
+   756→
+   757→  socket.on('beam:error', (err: { ok: false; code: string; message: string }) => {
+   758→    joiningCode = null
+   759→    joinSentFor = null
+   760→    const st = useBeamStore.getState()
+   761→    const message = err?.message ?? 'Unknown error'
+   762→    if (err?.code === 'EXPIRED') {
+   763→      useBeamStore.setState({ phase: 'expired', error: { title: 'Session expired', message } })
+   764→    } else if (err?.code === 'NOT_FOUND' || err?.code === 'INVALID_TOKEN' || err?.code === 'ENDED') {
+   765→      if (st.role === 'guest') {
+   766→        useBeamStore.setState({ phase: 'invalid', error: { title: 'Invalid or expired link', message } })
+   767→      } else {
+   768→        useBeamStore.setState({ phase: 'failed', error: { title: 'Session error', message } })
+   769→      }
+   770→    } else if (err?.code === 'ROLE_TAKEN') {
+   771→      useBeamStore.setState({ phase: 'failed', error: { title: 'Device already paired', message: 'Another device is already connected to this session.' } })
+   772→    } else if (err?.code === 'RATE_LIMITED') {
+   773→      useBeamStore.setState({ phase: 'failed', error: { title: 'Too many attempts', message } })
+   774→    } else {
+   775→      useBeamStore.setState({ phase: 'failed', error: { title: 'Connection error', message } })
+   776→    }
+   777→  })
+   778→
+   779→  socket.on('beam:peer', (data: { event: 'joined' | 'left'; device: DeviceInfo | null }) => {
+   780→    const st = useBeamStore.getState()
+   781→    if (!st.session) return
+   782→    if (data.event === 'joined') {
+   783→      useBeamStore.setState({ peerDevice: data.device })
+   784→      if (st.role === 'host') {
+   785→        if (data.device) notify('success', 'Phone connected', `${describeDevice(data.device)} is ready to exchange files`)
+   786→        hostStartPeerConnection().catch(() => switchMode('relay'))
+   787→      } else if (st.phase === 'lost' || st.phase === 'failed') {
+   788→        useBeamStore.setState({ phase: 'connecting', error: null })
+   789→        if (guestTimer) clearTimeout(guestTimer)
+   790→        guestTimer = setTimeout(() => {
+   791→          if (useBeamStore.getState().phase === 'connecting') {
+   792→            useBeamStore.setState({ phase: 'lost', error: { title: 'Connection timed out', message: 'Could not reach the desktop. Try reconnecting.' } })
+   793→          }
+   794→        }, 30_000)
+   795→      }
+   796→    } else {
+   797→      useBeamStore.setState({ peerDevice: null, mode: 'none', connectedAt: null })
+   798→      destroyPeer()
+   799→      if (st.role === 'host') {
+   800→        useBeamStore.setState({ phase: 'waiting' })
+   801→        // Fail in-flight transfers so they can be retried after re-pairing
+   802→        Object.values(useBeamStore.getState().transfers).forEach((row) => {
+   803→          if (row.status === 'active' || row.status === 'queued') {
+   804→            patchTransfer(row.id, { status: 'error', error: 'Connection lost', speed: 0 })
+   805→          }
+   806→        })
+   807→        sinks.clear()
+   808→        ackWaiters.clear()
+   809→        sendQueue = []
+   810→        sendActive = false
+   811→        notify('info', 'Phone disconnected', 'Waiting for a device to rejoin — the QR code is still valid.')
+   812→      } else {
+   813→        useBeamStore.setState({ phase: 'lost', error: { title: 'Connection lost', message: 'The desktop connection was interrupted. Reconnect to continue.' } })
+   814→      }
+   815→    }
+   816→  })
+   817→
+   818→  socket.on('beam:mode', (data: { mode: TransportMode }) => {
+   819→    if (useBeamStore.getState().role !== 'guest') return
+   820→    if (data?.mode === 'webrtc' || data?.mode === 'relay') switchMode(data.mode)
+   821→  })
+   822→
+   823→  socket.on('beam:manifest', (data: { files: FileMeta[] }) => {
+   824→    if (useBeamStore.getState().role !== 'guest') return
+   825→    if (!Array.isArray(data?.files)) return
+   826→    const prev = useBeamStore.getState().manifest
+   827→    const prevIds = new Set(prev.map((f) => f.id))
+   828→    const added = data.files.filter((f) => f && f.id && !prevIds.has(f.id))
+   829→    useBeamStore.setState({ manifest: data.files })
+   830→    if (added.length > 0 && useBeamStore.getState().phase === 'connected') {
+   831→      notify(
+   832→        'info',
+   833→        added.length === 1 ? 'New file on desktop' : `${added.length} new files on desktop`,
+   834→        added.length <= 3
+   835→          ? added.map((f) => f.name).join(', ')
+   836→          : `${added.slice(0, 3).map((f) => f.name).join(', ')} +${added.length - 3} more`,
+   837→      )
+   838→      window.dispatchEvent(
+   839→        new CustomEvent('beam:manifest-update', { detail: { addedIds: added.map((f) => f.id) } }),
+   840→      )
+   841→    }
+   842→  })
+   843→
+   844→  socket.on('beam:incoming', (data: { files: FileMeta[] }) => {
+   845→    const st = useBeamStore.getState()
+   846→    if (st.role !== 'host' || !Array.isArray(data?.files)) return
+   847→    const existing = new Set(st.incomingFiles.map((f) => f.id))
+   848→    const fresh = data.files.filter((f) => f && f.id && !existing.has(f.id) && f.size <= LIMITS.MAX_FILE_BYTES)
+   849→    if (fresh.length === 0) return
+   850→    useBeamStore.setState({ incomingFiles: [...st.incomingFiles, ...fresh] })
+   851→    for (const file of fresh) {
+   852→      const transferId = genId()
+   853→      upsertRow(transferId, {
+   854→        id: transferId,
+   855→        fileId: file.id,
+   856→        name: file.name,
+   857→        size: file.size,
+   858→        type: file.type,
+   859→        direction: 'p2d',
+   860→        status: 'queued',
+   861→        transferred: 0,
+   862→        speed: 0,
+   863→        etaSec: null,
+   864→        startedAt: null,
+   865→        error: null,
+   866→        transport: null,
+   867→      })
+   868→      emitCode('beam:transfer:request', { transferId, fileId: file.id, direction: 'p2d' })
+   869→    }
+   870→  })
+   871→
+   872→  socket.on('beam:transfer:request', (data: { transferId: string; fileId: string; direction: TransferDirection }) => {
+   873→    const st = useBeamStore.getState()
+   874→    if (!st.session || !data?.transferId || !data?.fileId) return
+   875→    if (!/^[A-Za-z0-9_-]{1,64}$/.test(data.transferId) || !/^[A-Za-z0-9_-]{1,64}$/.test(data.fileId)) return
+   876→
+   877→    // Host: phone asks for a file we publish.
+   878→    if (st.role === 'host' && data.direction === 'd2p') {
+   879→      const metaFile = st.selectedFiles.find((f) => f.id === data.fileId)
+   880→      if (!metaFile) return
+   881→      upsertRow(data.transferId, {
+   882→        id: data.transferId,
+   883→        fileId: data.fileId,
+   884→        name: metaFile.name,
+   885→        size: metaFile.size,
+   886→        type: metaFile.type,
+   887→        direction: 'd2p',
+   888→        status: 'queued',
+   889→        transferred: 0,
+   890→        speed: 0,
+   891→        etaSec: null,
+   892→        startedAt: null,
+   893→        error: null,
+   894→        transport: null,
+   895→      })
+   896→      enqueueSend(data.transferId, data.fileId)
+   897→      return
+   898→    }
+   899→
+   900→    // Host: phone re-requests to push one of its files (phone-side retry).
+   901→    // The sender owns the bytes — real metadata arrives with beam:transfer:start.
+   902→    if (st.role === 'host' && data.direction === 'p2d') {
+   903→      const known = st.incomingFiles.find((f) => f.id === data.fileId)
+   904→      upsertRow(data.transferId, {
+   905→        id: data.transferId,
+   906→        fileId: data.fileId,
+   907→        name: known?.name ?? 'File',
+   908→        size: known?.size ?? 0,
+   909→        type: known?.type ?? '',
+   910→        direction: 'p2d',
+   911→        status: 'queued',
+   912→        transferred: 0,
+   913→        speed: 0,
+   914→        etaSec: null,
+   915→        startedAt: null,
+   916→        error: null,
+   917→        transport: null,
+   918→      })
+   919→      return
+   920→    }
+   921→
+   922→    // Guest: desktop asks us to (re)send one of our files.
+   923→    if (st.role === 'guest' && data.direction === 'p2d') {
+   924→      const metaFile = st.mobileFiles.find((f) => f.id === data.fileId)
+   925→      if (!metaFile) return
+   926→      upsertRow(data.transferId, {
+   927→        id: data.transferId,
+   928→        fileId: data.fileId,
+   929→        name: metaFile.name,
+   930→        size: metaFile.size,
+   931→        type: metaFile.type,
+   932→        direction: 'p2d',
+   933→        status: 'queued',
+   934→        transferred: 0,
+   935→        speed: 0,
+   936→        etaSec: null,
+   937→        startedAt: null,
+   938→        error: null,
+   939→        transport: null,
+   940→      })
+   941→      enqueueSend(data.transferId, data.fileId)
+   942→    }
+   943→  })
+   944→
+   945→  socket.on('beam:transfer:start', (data: { transferId: string; file: FileMeta; direction: TransferDirection }) => {
+   946→    if (!data?.transferId || !data?.file) return
+   947→    handleStart(data.transferId, data.file, data.direction)
+   948→  })
+   949→
+   950→  socket.on('beam:transfer:chunk', (data: { transferId: string; data: ArrayBuffer }) => {
+   951→    if (!data?.transferId || !data?.data) return
+   952→    handleChunk(data.transferId, data.data)
+   953→  })
+   954→
+   955→  socket.on('beam:transfer:ack', (data: { transferId: string }) => {
+   956→    if (!data?.transferId) return
+   957→    resolveAcks(data.transferId)
+   958→  })
+   959→
+   960→  socket.on('beam:transfer:done', (data: { transferId: string }) => {
+   961→    if (!data?.transferId) return
+   962→    handleDone(data.transferId)
+   963→  })
+   964→
+   965→  socket.on('beam:transfer:cancel', (data: { transferId: string }) => {
+   966→    if (!data?.transferId) return
+   967→    handleCancel(data.transferId)
+   968→  })
+   969→
+   970→  socket.on('beam:transfer:error', (data: { transferId: string; message: string }) => {
+   971→    if (!data?.transferId) return
+   972→    handleTransferError(data.transferId, data.message ?? 'Transfer failed')
+   973→  })
+   974→
+   975→  socket.on('beam:ended', () => {
+   976→    destroyPeer()
+   977→    useBeamStore.setState({ phase: 'ended', mode: 'none', peerDevice: null })
+   978→    notify('info', 'Session ended', 'This transfer session has been closed.')
+   979→  })
+   980→
+   981→  socket.on('beam:expired', () => {
+   982→    destroyPeer()
+   983→    useBeamStore.setState({ phase: 'expired', mode: 'none', peerDevice: null })
+   984→  })
+   985→
+   986→  socket.on('disconnect', (reason: string) => {
+   987→    const st = useBeamStore.getState()
+   988→    if (st.phase === 'connected' || st.phase === 'connecting') {
+   989→      destroyPeer()
+   990→      useBeamStore.setState({ mode: 'none' })
+   991→      if (st.role === 'guest') {
+   992→        useBeamStore.setState({ phase: 'lost', error: { title: 'Connection lost', message: 'Your connection was interrupted. Reconnecting…' } })
+   993→      }
+   994→    }
+   995→  })
+   996→
+   997→  return socket
+   998→}
+   999→
+  1000→function emitJoin(): void {
+  1001→  const st = useBeamStore.getState()
+  1002→  if (!st.session || !st.role || !socket) return
+  1003→  if (joinSentFor === st.session.code) return
+  1004→  joinSentFor = st.session.code
+  1005→  socket.emit('beam:join', {
+  1006→    code: st.session.code,
+  1007→    token: st.session.token,
+  1008→    role: st.role,
+  1009→    device: getDeviceInfo(),
+  1010→  })
+  1011→}
+  1012→
+  1013→/* ------------------------------------------------------------------ */
+  1014→/* Store                                                              */
+  1015→/* ------------------------------------------------------------------ */
+  1016→
+  1017→const initialState: BeamState = {
+  1018→  role: null,
+  1019→  phase: 'idle',
+  1020→  error: null,
+  1021→  session: null,
+  1022→  selectedFiles: [],
+  1023→  manifest: [],
+  1024→  mobileFiles: [],
+  1025→  incomingFiles: [],
+  1026→  transfers: {},
+  1027→  received: [],
+  1028→  mode: 'none',
+  1029→  peerDevice: null,
+  1030→  connectedAt: null,
+  1031→  stats: { filesTransferred: 0, totalData: 0 },
+  1032→}
+  1033→
+  1034→export const useBeamStore = create<BeamStore>()((set, get) => ({
+  1035→  ...initialState,
+  1036→
+  1037→  /* ---------------- desktop: file selection ---------------- */
+  1038→
+  1039→  addFiles(files: FileList | File[]) {
+  1040→    const list = Array.from(files)
+  1041→    const { accepted, rejections } = validateFiles(list, get().selectedFiles.reduce((a, f) => a + f.size, 0))
+  1042→    for (const r of rejections) notify('error', 'Cannot add file', `${r.name} — ${r.reason}`)
+  1043→    if (accepted.length === 0) return
+  1044→
+  1045→    const newFiles: SelectedFile[] = accepted.map((file) => ({
+  1046→      id: genId(),
+  1047→      name: file.name,
+  1048→      size: file.size,
+  1049→      type: file.type,
+  1050→      file,
+  1051→      previewUrl: makePreviewUrl(file),
+  1052→    }))
+  1053→    for (const f of newFiles) fileObjects.set(f.id, f.file)
+  1054→
+  1055→    set((s) => ({ selectedFiles: [...s.selectedFiles, ...newFiles] }))
+  1056→
+  1057→    const st = get()
+  1058→    if (!st.session && st.phase !== 'creating') {
+  1059→      void get().createNewSession()
+  1060→    } else {
+  1061→      publishManifestIfHost()
+  1062→    }
+  1063→  },
+  1064→
+  1065→  removeSelectedFile(id: string) {
+  1066→    const file = get().selectedFiles.find((f) => f.id === id)
+  1067→    if (file?.previewUrl) URL.revokeObjectURL(file.previewUrl)
+  1068→    fileObjects.delete(id)
+  1069→    // cancel any queued/active transfer of this file
+  1070→    Object.values(get().transfers).forEach((row) => {
+  1071→      if (row.fileId === id && (row.status === 'queued' || row.status === 'active')) {
+  1072→        canceledIds.add(row.id)
+  1073→        emitCode('beam:transfer:cancel', { transferId: row.id })
+  1074→        patchTransfer(row.id, { status: 'canceled' })
+  1075→      }
+  1076→    })
+  1077→    set((s) => ({ selectedFiles: s.selectedFiles.filter((f) => f.id !== id) }))
+  1078→    publishManifestIfHost()
+  1079→  },
+  1080→
+  1081→  reorderSelectedFiles(fromId: string, toId: string) {
+  1082→    const files = [...get().selectedFiles]
+  1083→    const from = files.findIndex((f) => f.id === fromId)
+  1084→    const to = files.findIndex((f) => f.id === toId)
+  1085→    if (from === -1 || to === -1 || from === to) return
+  1086→    const [moved] = files.splice(from, 1)
+  1087→    files.splice(to, 0, moved)
+  1088→    set({ selectedFiles: files })
+  1089→    publishManifestIfHost()
+  1090→  },
+  1091→
+  1092→  /* ---------------- desktop: session lifecycle ---------------- */
+  1093→
+  1094→  async createNewSession() {
+  1095→    const files = get().selectedFiles
+  1096→    if (files.length === 0) return
+  1097→    if (get().phase === 'creating') return
+  1098→
+  1099→    destroyPeer()
+  1100→    sendQueue = []
+  1101→    sendActive = false
+  1102→    set({ ...initialState, selectedFiles: files, role: 'host', phase: 'creating' })
+  1103→
+  1104→    try {
+  1105→      const metas = files.map((f) => ({ id: f.id, name: f.name, size: f.size, type: f.type }))
+  1106→      const res = await api.createSession(metas)
+  1107→      const joinUrl =
+  1108→        typeof window !== 'undefined'
+  1109→          ? `${window.location.origin}/?s=${encodeURIComponent(res.code)}&t=${encodeURIComponent(res.token)}`
+  1110→          : ''
+  1111→      set({
+  1112→        session: { code: res.code, token: res.token, expiresAt: res.expiresAt, joinUrl },
+  1113→        role: 'host',
+  1114→      })
+  1115→      ensureSocket()
+  1116→      if (socket?.connected) emitJoin()
+  1117→    } catch (err) {
+  1118→      const { title, message } = api.friendlyError(err)
+  1119→      set({ phase: 'failed', error: { title, message } })
+  1120→    }
+  1121→  },
+  1122→
+  1123→  async endSession() {
+  1124→    const st = get()
+  1125→    if (st.session && st.role === 'host') {
+  1126→      emitCode('beam:end', {})
+  1127→      void api.endSession(st.session.code, st.session.token).catch(() => undefined)
+  1128→    } else if (st.session) {
+  1129→      emitCode('beam:end', {})
+  1130→    }
+  1131→    destroyPeer()
+  1132→    socket?.disconnect()
+  1133→    socket = null
+  1134→    set({ phase: 'ended', mode: 'none', peerDevice: null, connectedAt: null })
+  1135→  },
+  1136→
+  1137→  resetAll() {
+  1138→    destroyPeer()
+  1139→    socket?.disconnect()
+  1140→    socket = null
+  1141→    joiningCode = null
+  1142→    joinSentFor = null
+  1143→    sendQueue = []
+  1144→    sendActive = false
+  1145→    sinks.clear()
+  1146→    ackWaiters.clear()
+  1147→    canceledIds.clear()
+  1148→    samples.clear()
+  1149→    lastSpeed.clear()
+  1150→    get().selectedFiles.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl))
+  1151→    set({ ...initialState })
+  1152→  },
+  1153→
+  1154→  /* ---------------- phone: session open ---------------- */
+  1155→
+  1156→  async openSession(code: string, token: string) {
+  1157→    // Idempotence guard (StrictMode double-mount / re-render)
+  1158→    if (joiningCode === code && ['opening', 'connecting'].includes(get().phase)) return
+  1159→    if (get().role === 'guest' && get().session?.code === code && ['connected', 'connecting', 'lost'].includes(get().phase)) return
+  1160→
+  1161→    set({ ...initialState, role: 'guest', phase: 'opening', session: { code, token, expiresAt: 0, joinUrl: '' } })
+  1162→    joiningCode = code
+  1163→
+  1164→    try {
+  1165→      const info = await api.getSession(code, token)
+  1166→      if (info.session.status !== 'active') {
+  1167→        set({
+  1168→          phase: info.session.status === 'expired' ? 'expired' : 'invalid',
+  1169→          error: { title: 'Session unavailable', message: 'This session is no longer active.' },
+  1170→        })
+  1171→        joiningCode = null
+  1172→        return
+  1173→      }
+  1174→      set({ manifest: info.session.fileManifest ?? [] })
+  1175→      ensureSocket()
+  1176→      if (socket?.connected) emitJoin()
+  1177→    } catch (err) {
+  1178→      const { title, message } = api.friendlyError(err)
+  1179→      const isExpiry = title === 'Session not found' || title === 'Session expired'
+  1180→      set({
+  1181→        phase: isExpiry ? 'invalid' : 'failed',
+  1182→        error: { title, message },
+  1183→      })
+  1184→      joiningCode = null
+  1185→    }
+  1186→  },
+  1187→
+  1188→  reconnect() {
+  1189→    const st = get()
+  1190→    if (st.role !== 'guest' || !st.session) return
+  1191→    joiningCode = null
+  1192→    joinSentFor = null
+  1193→    set({ phase: 'opening', error: null })
+  1194→    ensureSocket()
+  1195→    if (!socket?.connected) {
+  1196→      // socket.io will auto-reconnect and emitJoin on 'connect'
+  1197→      socket?.connect()
+  1198→    } else {
+  1199→      emitJoin()
+  1200→    }
+  1201→    set({ phase: 'connecting' })
+  1202→  },
+  1203→
+  1204→  /* ---------------- phone: download ---------------- */
+  1205→
+  1206→  requestDownload(fileId: string) {
+  1207→    const st = get()
+  1208→    if (st.phase !== 'connected') {
+  1209→      notify('info', 'Not connected', 'Wait until the connection is ready, then try again.')
+  1210→      return
+  1211→    }
+  1212→    const file = st.manifest.find((f) => f.id === fileId)
+  1213→    if (!file) return
+  1214→    const transferId = genId()
+  1215→    upsertRow(transferId, {
+  1216→      id: transferId,
+  1217→      fileId,
+  1218→      name: file.name,
+  1219→      size: file.size,
+  1220→      type: file.type,
+  1221→      direction: 'd2p',
+  1222→      status: 'queued',
+  1223→      transferred: 0,
+  1224→      speed: 0,
+  1225→      etaSec: null,
+  1226→      startedAt: null,
+  1227→      error: null,
+  1228→      transport: null,
+  1229→    })
+  1230→    emitCode('beam:transfer:request', { transferId, fileId, direction: 'd2p' })
+  1231→  },
+  1232→
+  1233→  downloadAll() {
+  1234→    const st = get()
+  1235→    const done = new Set(
+  1236→      Object.values(st.transfers)
+  1237→        .filter((t) => t.direction === 'd2p' && t.status === 'done')
+  1238→        .map((t) => t.fileId),
+  1239→    )
+  1240→    const pending = st.manifest.filter((f) => !done.has(f.id))
+  1241→    if (pending.length === 0) {
+  1242→      notify('info', 'All files downloaded', 'Every file in this session is already on your device.')
+  1243→      return
+  1244→    }
+  1245→    // Small stagger keeps the send queue orderly
+  1246→    pending.forEach((f, i) => setTimeout(() => get().requestDownload(f.id), i * 400))
+  1247→  },
+  1248→
+  1249→  /* ---------------- phone: send to desktop ---------------- */
+  1250→
+  1251→  addMobileFiles(files: FileList | File[]) {
+  1252→    const list = Array.from(files)
+  1253→    const { accepted, rejections } = validateFiles(list, get().mobileFiles.reduce((a, f) => a + f.size, 0))
+  1254→    for (const r of rejections) notify('error', 'Cannot send file', `${r.name} — ${r.reason}`)
+  1255→    if (accepted.length === 0) return
+  1256→
+  1257→    const newFiles: SelectedFile[] = accepted.map((file) => ({
+  1258→      id: genId(),
+  1259→      name: file.name,
+  1260→      size: file.size,
+  1261→      type: file.type,
+  1262→      file,
+  1263→      previewUrl: makePreviewUrl(file),
+  1264→    }))
+  1265→    for (const f of newFiles) fileObjects.set(f.id, f.file)
+  1266→    set((s) => ({ mobileFiles: [...s.mobileFiles, ...newFiles] }))
+  1267→
+  1268→    const st = get()
+  1269→    if (st.session && st.role === 'guest' && ['connected', 'connecting'].includes(st.phase)) {
+  1270→      emitCode('beam:incoming', {
+  1271→        files: st.mobileFiles.map((f) => ({ id: f.id, name: f.name, size: f.size, type: f.type })),
+  1272→      })
+  1273→    }
+  1274→  },
+  1275→
+  1276→  removeMobileFile(id: string) {
+  1277→    const file = get().mobileFiles.find((f) => f.id === id)
+  1278→    if (file?.previewUrl) URL.revokeObjectURL(file.previewUrl)
+  1279→    fileObjects.delete(id)
+  1280→    Object.values(get().transfers).forEach((row) => {
+  1281→      if (row.fileId === id && (row.status === 'queued' || row.status === 'active')) {
+  1282→        canceledIds.add(row.id)
+  1283→        emitCode('beam:transfer:cancel', { transferId: row.id })
+  1284→        patchTransfer(row.id, { status: 'canceled' })
+  1285→      }
+  1286→    })
+  1287→    set((s) => ({ mobileFiles: s.mobileFiles.filter((f) => f.id !== id) }))
+  1288→    const st = get()
+  1289→    if (st.session && st.role === 'guest' && ['connected', 'connecting'].includes(st.phase)) {
+  1290→      emitCode('beam:incoming', {
+  1291→        files: get().mobileFiles.map((f) => ({ id: f.id, name: f.name, size: f.size, type: f.type })),
+  1292→      })
+  1293→    }
+  1294→  },
+  1295→
+  1296→  /* ---------------- shared ---------------- */
+  1297→
+  1298→  saveReceived(id: string) {
+  1299→    const file = get().received.find((r) => r.id === id)
+  1300→    if (!file) return
+  1301→    triggerDownload(file.url, file.name)
+  1302→    notify('success', 'Saved', `${file.name} was saved to your downloads.`)
+  1303→  },
+  1304→
+  1305→  async shareReceived(id: string) {
+  1306→    const file = get().received.find((r) => r.id === id)
+  1307→    if (!file) return
+  1308→    try {
+  1309→      const blob = await fetch(file.url).then((r) => r.blob())
+  1310→      const shareFile = new File([blob], file.name, { type: file.type || blob.type })
+  1311→      const nav = navigator as Navigator & { canShare?: (data: ShareData) => boolean }
+  1312→      if (nav.share && nav.canShare?.({ files: [shareFile] })) {
+  1313→        await nav.share({ files: [shareFile], title: file.name })
+  1314→        return
+  1315→      }
+  1316→      triggerDownload(file.url, file.name)
+  1317→    } catch {
+  1318→      // user cancelled or unsupported
+  1319→    }
+  1320→  },
+  1321→
+  1322→  dismissReceived(id: string) {
+  1323→    const file = get().received.find((r) => r.id === id)
+  1324→    if (file) URL.revokeObjectURL(file.url)
+  1325→    set((s) => ({ received: s.received.filter((r) => r.id !== id) }))
+  1326→  },
+  1327→
+  1328→  retryTransfer(transferId: string) {
+  1329→    const row = get().transfers[transferId]
+  1330→    if (!row || row.status === 'active') return
+  1331→    const st = get()
+  1332→    if (row.direction === 'p2d' && !fileObjects.has(row.fileId)) {
+  1333→      notify('error', 'Cannot retry', `${row.name} is no longer selected on this device.`)
+  1334→      return
+  1335→    }
+  1336→    const newId = genId()
+  1337→    upsertRow(newId, { ...row, id: newId, status: 'queued', transferred: 0, speed: 0, etaSec: null, startedAt: null, error: null, transport: null })
+  1338→    patchTransfer(transferId, { status: 'canceled' })
+  1339→    emitCode('beam:transfer:request', { transferId: newId, fileId: row.fileId, direction: row.direction })
+  1340→    if (row.direction === 'p2d' && st.role === 'guest') {
+  1341→      // The request only queues a row on the desktop — we own the bytes,
+  1342→      // so start pushing locally as well.
+  1343→      enqueueSend(newId, row.fileId)
+  1344→    }
+  1345→  },
+  1346→
+  1347→  cancelTransfer(transferId: string) {
+  1348→    canceledIds.add(transferId)
+  1349→    emitCode('beam:transfer:cancel', { transferId })
+  1350→    patchTransfer(transferId, { status: 'canceled', speed: 0 })
+  1351→  },
+  1352→
+  1353→  markExpiredIfDue() {
+  1354→    const st = get()
+  1355→    if (st.session && st.session.expiresAt > 0 && Date.now() >= st.session.expiresAt) {
+  1356→      if (st.phase !== 'expired' && st.phase !== 'ended') {
+  1357→        destroyPeer()
+  1358→        set({ phase: 'expired', mode: 'none', peerDevice: null })
+  1359→      }
+  1360→    }
+  1361→  },
+  1362→}))
+  1363→
+  1364→/** For tests / debugging */
+  1365→export function _getRuntimeSocket(): Socket | null {
+  1366→  return socket
+  1367→}
+  1368→
+  1369→// Debug/testing hook — lets QA tooling inspect (and drive) the live store.
+  1370→if (typeof window !== 'undefined') {
+  1371→  ;(window as unknown as Record<string, unknown>).__beam = {
+  1372→    getState: () => useBeamStore.getState(),
+  1373→    store: useBeamStore, // QA only: full zustand API (setState, subscribe, …)
+  1374→    debug: beamDebug,
+  1375→    storeId: Math.random().toString(36).slice(2, 8),
+  1376→    version: 3,
+  1377→  }
+  1378→}
+  1379→
