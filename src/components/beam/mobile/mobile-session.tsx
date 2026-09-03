@@ -18,12 +18,14 @@ import {
   ScanLine,
   Share2,
   ShieldCheck,
+  Sparkles,
   Timer,
   Volume2,
   VolumeX,
   X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { SESSION_TTL_MINUTES } from '@/lib/beam/config'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
@@ -449,6 +451,9 @@ function SendToDesktop({
   const removeMobileFile = useBeamStore((s) => s.removeMobileFile)
   const retryTransfer = useBeamStore((s) => s.retryTransfer)
   const mobileFiles = useBeamStore((s) => s.mobileFiles)
+  const optimizeUploads = useBeamStore((s) => s.optimizeUploads)
+  const setOptimizeUploads = useBeamStore((s) => s.setOptimizeUploads)
+  const mobileOptimized = useBeamStore((s) => s.mobileOptimized)
   const pickRef = useRef<HTMLInputElement>(null)
   const cameraRef = useRef<HTMLInputElement>(null)
 
@@ -489,20 +494,45 @@ function SendToDesktop({
       />
 
       <div className="grid grid-cols-2 gap-2.5 p-4">
-        <Button className="h-11" onClick={() => pickRef.current?.click()} disabled={disabled}>
+        <Button className="h-11 active:scale-[0.98]" onClick={() => pickRef.current?.click()} disabled={disabled}>
           <Plus className="h-4 w-4" aria-hidden />
           Select Files
         </Button>
-        <Button variant="outline" className="h-11" onClick={() => cameraRef.current?.click()} disabled={disabled}>
+        <Button variant="outline" className="h-11 active:scale-[0.98]" onClick={() => cameraRef.current?.click()} disabled={disabled}>
           <Camera className="h-4 w-4" aria-hidden />
           Camera
         </Button>
+      </div>
+
+      {/* Photo optimization — shrink big camera photos before they hit the wire */}
+      <div className="flex items-center justify-between gap-3 border-t border-border/60 px-4 py-3">
+        <label htmlFor="beam-optimize" className="min-w-0 cursor-pointer select-none">
+          <span className="flex items-center gap-1.5 text-sm font-medium">
+            <Sparkles className="h-3.5 w-3.5 text-primary" aria-hidden />
+            Optimize photos
+          </span>
+          <span className="mt-0.5 block text-xs text-muted-foreground">
+            Shrinks large photos before sending — faster on mobile data
+          </span>
+        </label>
+        <Switch
+          id="beam-optimize"
+          checked={optimizeUploads}
+          onCheckedChange={setOptimizeUploads}
+          aria-label="Optimize photos before sending"
+          className="shrink-0"
+        />
       </div>
 
       {mobileFiles.length > 0 && (
         <ul className="divide-y divide-border/60 border-t border-border/70">
           {mobileFiles.map((f) => {
             const row = rows.filter((r) => r.fileId === f.id).at(-1)
+            const origSize = mobileOptimized[f.id]
+            const sizeHint =
+              origSize != null
+                ? `${formatBytes(origSize)} → ${formatBytes(f.size)} · optimized`
+                : formatBytes(f.size)
             return (
               <li key={f.id} className="flex items-center gap-3 px-4 py-3">
                 {f.previewUrl ? (
@@ -525,10 +555,12 @@ function SendToDesktop({
                       : row?.status === 'done'
                         ? 'Delivered to desktop'
                         : row?.status === 'queued'
-                          ? 'Queued…'
+                          ? origSize != null
+                            ? `Queued… · ${sizeHint}`
+                            : 'Queued…'
                           : row?.status === 'error'
                             ? row.error ?? 'Failed'
-                            : formatBytes(f.size)}
+                            : sizeHint}
                   </p>
                 </div>
                 {row?.status === 'done' ? (

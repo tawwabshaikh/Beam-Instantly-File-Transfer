@@ -19,6 +19,7 @@ import { useBeamStore } from '@/lib/beam/engine'
 import { formatBytes, formatCountdown } from '@/lib/beam/format'
 import { getDeviceInfo } from '@/lib/beam/device'
 import { SESSION_TTL_MINUTES } from '@/lib/beam/config'
+import { useLang } from '@/lib/beam/i18n'
 import { useCountdown } from '@/hooks/use-countdown'
 
 export function DesktopApp() {
@@ -35,7 +36,7 @@ export function DesktopApp() {
         href="#beam-main"
         className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:shadow-lg"
       >
-        Skip to content
+        <SkipLabel />
       </a>
       <SiteHeader view={view} onNavigate={setView} />
       <main id="beam-main" className="flex-1">
@@ -54,6 +55,11 @@ export function DesktopApp() {
 
 const emptySubscribe = () => () => {}
 
+function SkipLabel() {
+  const { t } = useLang()
+  return <>{t('skip.content')}</>
+}
+
 /** Hydration-safe "client mounted" check without setState-in-effect. */
 function useMounted(): boolean {
   return useSyncExternalStore(
@@ -71,6 +77,7 @@ function useMounted(): boolean {
 function MobileScanFab() {
   const mounted = useMounted()
   const [scanOpen, setScanOpen] = useState(false)
+  const { t } = useLang()
 
   if (!mounted || !getDeviceInfo().isMobile) return null
   if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('s')) return null
@@ -81,10 +88,10 @@ function MobileScanFab() {
         type="button"
         onClick={() => setScanOpen(true)}
         className="fixed bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-5 z-50 inline-flex h-14 items-center gap-2 rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-xl shadow-primary/30 transition-transform active:scale-95"
-        aria-label="Scan a desktop QR code to pair"
+        aria-label={t('fab.aria')}
       >
         <ScanLine className="h-5 w-5" aria-hidden />
-        Scan QR
+        {t('fab.scan')}
       </button>
       <QrScannerDialog
         open={scanOpen}
@@ -185,12 +192,13 @@ function SessionArea() {
 }
 
 function CrossNetworkTip() {
+  const { t } = useLang()
   return (
     <div className="flex items-start gap-3 rounded-2xl border border-border bg-accent/50 p-4 text-sm">
       <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden />
       <p className="text-muted-foreground">
-        <span className="font-medium text-foreground">Your phone doesn’t need the same Wi-Fi.</span>{' '}
-        Mobile data, another network, another country — the QR link works anywhere the internet reaches.
+        <span className="font-medium text-foreground">{t('tip.title')}</span>{' '}
+        {t('tip.body')}
       </p>
     </div>
   )

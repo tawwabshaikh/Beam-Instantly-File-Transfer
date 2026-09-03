@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { ThemeProvider } from 'next-themes'
 import { toast } from 'sonner'
 import { consumeSharedTextFromUrl } from '@/lib/beam/share-target'
+import { initDocumentLang } from '@/lib/beam/i18n'
 
 /**
  * App-wide providers: dark/light theme + bridge that turns engine-level
@@ -30,6 +31,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
   // as ?title/&text/&url params — stash it and clean the address bar.
   useEffect(() => {
     consumeSharedTextFromUrl()
+  }, [])
+
+  // i18n: apply the persisted language to <html lang> once on boot.
+  useEffect(() => {
+    initDocumentLang()
   }, [])
 
   // PWA: register the (network-only, cache-free) service worker so the

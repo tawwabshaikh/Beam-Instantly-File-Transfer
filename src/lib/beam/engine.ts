@@ -19,6 +19,8 @@ import {
   waitUntilOpen,
 } from './webrtc'
 import { genId, isBlockedType, makePreviewUrl, validateFiles } from './files'
+import { compressImages, isCompressibleImage } from './compress'
+import { formatBytes } from './format'
 import { getDeviceInfo, describeDevice } from './device'
 import { recordHistory } from './history'
 import { playChime } from './chime'
@@ -113,6 +115,10 @@ export interface BeamState {
   stats: { filesTransferred: number; totalData: number }
   /** Name of the folder received files are written into (File System Access API), or null. */
   saveFolder: string | null
+  /** When on, big images added on the phone are downscaled/re-encoded before sending. */
+  optimizeUploads: boolean
+  /** mobileFile id → original byte size, recorded when optimization shrank it. */
+  mobileOptimized: Record<string, number>
 }
 
 interface BeamActions {
@@ -129,6 +135,7 @@ interface BeamActions {
   downloadAll(): void
   addMobileFiles(files: FileList | File[]): void
   removeMobileFile(id: string): void
+  setOptimizeUploads(value: boolean): void
   saveReceived(id: string): void
   shareReceived(id: string): Promise<void>
   dismissReceived(id: string): void
@@ -170,6 +177,53 @@ const samples = new Map<string, { t: number; b: number }[]>()
 const lastSpeed = new Map<string, number>()
 const flushTimes = new Map<string, number>()
 const canceledIds = new Set<string>()
+
+/* ---------------- photo-optimization preference (persisted) ---------------- */
+
+const OPTIMIZE_KEY = 'beam.optimize.v1'
+
+function readOptimizePref(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(OPTIMIZE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeOptimizePref(value: boolean) {
+  try {
+    window.localStorage.setItem(OPTIMIZE_KEY, value ? '1' : '0')
+  } catch {
+    // non-fatal
+  }
+}
+
+/** Unified push for phone → desktop upload entries (keeps manifest broadcast in one place). */
+function pushMobileFiles(newFiles: SelectedFile[], optimized: Record<string, number> = {}) {
+  for (const f of newFiles) fileObjects.set(f.id, f.file)
+  useBeamStore.setState((s) => ({
+    mobileFiles: [...s.mobileFiles, ...newFiles],
+    mobileOptimized: { ...s.mobileOptimized, ...optimized },
+  }))
+  const st = useBeamStore.getState()
+  if (st.session && st.role === 'guest' && ['connected', 'connecting'].includes(st.phase)) {
+    emitCode('beam:incoming', {
+      files: st.mobileFiles.map((f) => ({ id: f.id, name: f.name, size: f.size, type: f.type })),
+    })
+  }
+}
+
+function asSelectedFile(file: File): SelectedFile {
+  return {
+    id: genId(),
+    name: file.name,
+    size: file.size,
+    type: file.type,
+    file,
+    previewUrl: makePreviewUrl(file),
+  }
+}
 
 /** QA instrumentation (read via window.__beam.debug). */
 const beamDebug = {
@@ -1095,10 +1149,13 @@ const initialState: BeamState = {
   peerDevice: null,
   connectedAt: null,
   stats: { filesTransferred: 0, totalData: 0 },
+  optimizeUploads: false,
+  mobileOptimized: {},
 }
 
 export const useBeamStore = create<BeamStore>()((set, get) => ({
   ...initialState,
+  optimizeUploads: readOptimizePref(),
 
   /* ---------------- desktop: file selection ---------------- */
 
@@ -1215,6 +1272,7 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
   },
 
   resetAll() {
+    const keepOptimize = get().optimizeUploads
     destroyPeer()
     socket?.disconnect()
     socket = null
@@ -1228,7 +1286,7 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
     samples.clear()
     lastSpeed.clear()
     get().selectedFiles.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl))
-    set({ ...initialState })
+    set({ ...initialState, optimizeUploads: keepOptimize })
   },
 
   /* ---------------- phone: session open ---------------- */
@@ -1238,7 +1296,13 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
     if (joiningCode === code && ['opening', 'connecting'].includes(get().phase)) return
     if (get().role === 'guest' && get().session?.code === code && ['connected', 'connecting', 'lost'].includes(get().phase)) return
 
-    set({ ...initialState, role: 'guest', phase: 'opening', session: { code, token, expiresAt: 0, joinUrl: '' } })
+    set({
+      ...initialState,
+      optimizeUploads: get().optimizeUploads,
+      role: 'guest',
+      phase: 'opening',
+      session: { code, token, expiresAt: 0, joinUrl: '' },
+    })
     joiningCode = code
 
     try {
@@ -1334,29 +1398,50 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
     for (const r of rejections) notify('error', 'Cannot send file', `${r.name} — ${r.reason}`)
     if (accepted.length === 0) return
 
-    const newFiles: SelectedFile[] = accepted.map((file) => ({
-      id: genId(),
-      name: file.name,
-      size: file.size,
-      type: file.type,
-      file,
-      previewUrl: makePreviewUrl(file),
-    }))
-    for (const f of newFiles) fileObjects.set(f.id, f.file)
-    set((s) => ({ mobileFiles: [...s.mobileFiles, ...newFiles] }))
-
-    const st = get()
-    if (st.session && st.role === 'guest' && ['connected', 'connecting'].includes(st.phase)) {
-      emitCode('beam:incoming', {
-        files: st.mobileFiles.map((f) => ({ id: f.id, name: f.name, size: f.size, type: f.type })),
-      })
+    // Photo optimization: downscale + re-encode big images before they queue.
+    // Non-image selections keep the original synchronous path (zero added latency).
+    if (get().optimizeUploads && accepted.some((f) => isCompressibleImage(f))) {
+      void compressImages(accepted)
+        .then((items) => {
+          const optimized: Record<string, number> = {}
+          let from = 0
+          let to = 0
+          const newFiles: SelectedFile[] = items.map((it) => {
+            const sf = asSelectedFile(it.file)
+            if (it.compressed) {
+              optimized[sf.id] = it.originalSize
+              from += it.originalSize
+              to += it.size
+            }
+            return sf
+          })
+          pushMobileFiles(newFiles, optimized)
+          const n = Object.keys(optimized).length
+          if (n > 0) {
+            notify(
+              'success',
+              'Photos optimized',
+              `${n} photo${n === 1 ? '' : 's'} will send faster — ${formatBytes(from)} → ${formatBytes(to)}.`,
+            )
+          }
+        })
+        .catch(() => pushMobileFiles(accepted.map(asSelectedFile)))
+      return
     }
+
+    pushMobileFiles(accepted.map(asSelectedFile))
   },
 
   removeMobileFile(id: string) {
     const file = get().mobileFiles.find((f) => f.id === id)
     if (file?.previewUrl) URL.revokeObjectURL(file.previewUrl)
     fileObjects.delete(id)
+    useBeamStore.setState((s) => {
+      if (!(id in s.mobileOptimized)) return s
+      const next = { ...s.mobileOptimized }
+      delete next[id]
+      return { mobileOptimized: next }
+    })
     Object.values(get().transfers).forEach((row) => {
       if (row.fileId === id && (row.status === 'queued' || row.status === 'active')) {
         canceledIds.add(row.id)
@@ -1371,6 +1456,11 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
         files: get().mobileFiles.map((f) => ({ id: f.id, name: f.name, size: f.size, type: f.type })),
       })
     }
+  },
+
+  setOptimizeUploads(value: boolean) {
+    writeOptimizePref(value)
+    set({ optimizeUploads: value })
   },
 
   /* ---------------- shared ---------------- */
@@ -1512,6 +1602,6 @@ if (typeof window !== 'undefined') {
     store: useBeamStore, // QA only: full zustand API (setState, subscribe, …)
     debug: beamDebug,
     storeId: Math.random().toString(36).slice(2, 8),
-    version: 7,
+    version: 8,
   }
 }
