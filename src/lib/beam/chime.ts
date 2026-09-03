@@ -68,11 +68,11 @@ if (typeof document !== 'undefined') {
   document.addEventListener('pointerdown', primeChime, { once: false, passive: true })
 }
 
-function tone(freq: number, startAt: number, duration: number, volume: number): void {
+function tone(freq: number, startAt: number, duration: number, volume: number, type: OscillatorType = 'sine'): void {
   if (!ctx) return
   const osc = ctx.createOscillator()
   const gain = ctx.createGain()
-  osc.type = 'sine'
+  osc.type = type
   osc.frequency.value = freq
   gain.gain.setValueAtTime(0, ctx.currentTime + startAt)
   gain.gain.linearRampToValueAtTime(volume, ctx.currentTime + startAt + 0.02)
@@ -83,14 +83,24 @@ function tone(freq: number, startAt: number, duration: number, volume: number): 
   osc.stop(ctx.currentTime + startAt + duration + 0.05)
 }
 
-/** Pleasant two-note "done" chime. Respects the persisted mute setting. */
-export function playChime(): void {
+export type ChimeKind = 'receive' | 'send'
+
+/**
+ * Subtle completion chimes. Receiving = rising two-note "arrived";
+ * sending = brighter falling two-note "delivered". Respects mute.
+ */
+export function playChime(kind: ChimeKind = 'receive'): void {
   if (isSoundMuted()) return
   const c = ensureContext()
   if (!c || c.state !== 'running') return
   try {
-    tone(880, 0, 0.18, 0.06)
-    tone(1318.5, 0.12, 0.22, 0.05)
+    if (kind === 'receive') {
+      tone(880, 0, 0.18, 0.06)
+      tone(1318.5, 0.12, 0.22, 0.05)
+    } else {
+      tone(1174.7, 0, 0.14, 0.05, 'triangle')
+      tone(1568, 0.1, 0.18, 0.045, 'triangle')
+    }
   } catch {
     // audio is best-effort
   }

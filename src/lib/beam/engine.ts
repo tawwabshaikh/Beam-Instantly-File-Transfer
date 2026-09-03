@@ -22,6 +22,7 @@ import { genId, isBlockedType, makePreviewUrl, validateFiles } from './files'
 import { getDeviceInfo, describeDevice } from './device'
 import { recordHistory } from './history'
 import { playChime } from './chime'
+import { bumpTitleBadge } from './title-badge'
 import { clearSaveFolder, getSaveFolderName, pickSaveFolder, saveBlobToFolder, supportsSaveToFolder } from './save-target'
 import * as api from './api'
 
@@ -358,7 +359,8 @@ function handleDone(transferId: string): void {
     state.role === 'guest' ? 'Download completed' : 'File received',
     sink.meta.name,
   )
-  playChime()
+  playChime('receive')
+  bumpTitleBadge()
   pumpSend()
 }
 
@@ -480,7 +482,7 @@ function finishSend(transferId: string, file: File, meta: FileMeta): void {
     status: 'completed',
     sessionCode: state.session?.code ?? '',
   })
-  playChime()
+  playChime('send')
   notify('success', 'Transfer completed', file.name)
 }
 
@@ -1020,7 +1022,8 @@ function ensureSocket(): Socket {
       st.role === 'host' ? 'Note from phone' : 'Note from desktop',
       note.text.length > 90 ? `${note.text.slice(0, 90)}…` : note.text,
     )
-    playChime()
+    playChime('receive')
+    bumpTitleBadge()
   })
 
   socket.on('beam:note:error', (data: { message: string }) => {

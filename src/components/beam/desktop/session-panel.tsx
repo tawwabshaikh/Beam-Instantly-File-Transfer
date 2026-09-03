@@ -8,9 +8,11 @@ import {
   CircleAlert,
   Download,
   Eye,
-  Gauge,
+  FileArchive,
+  FileAudio,
   Files,
   FolderOpen,
+  Gauge,
   HardDrive,
   Loader2,
   Maximize2,
@@ -26,6 +28,7 @@ import { formatBytes, formatDuration, formatRelativeTime, formatSpeed } from '@/
 import { describeDevice } from '@/lib/beam/device'
 import { extendWindowFor } from '@/lib/beam/protocol'
 import { supportsSaveToFolder } from '@/lib/beam/save-target'
+import { canZip, zipAndDownload } from '@/lib/beam/zip'
 import { FileTypeIcon } from '@/components/beam/desktop/dropzone'
 import { SpeedSparkline } from '@/components/beam/speed-sparkline'
 import { useCountdown } from '@/hooks/use-countdown'
@@ -314,11 +317,22 @@ export function ReceivedFiles() {
   const clearSaveFolder = useBeamStore((s) => s.clearSaveFolder)
   const saveFolder = useBeamStore((s) => s.saveFolder)
   const [previewFile, setPreviewFile] = useState<ReceivedFile | null>(null)
+  const [zipping, setZipping] = useState(false)
 
   if (received.length === 0) return null
 
   const totalBytes = received.reduce((a, f) => a + f.size, 0)
   const folderCapable = supportsSaveToFolder()
+  const zipEligible = received.length >= 2 && canZip(received)
+
+  const handleZip = () => {
+    if (zipping) return
+    setZipping(true)
+    void zipAndDownload(received.map((f) => ({ name: f.name, url: f.url })))
+      .then(() => notifyZipDone())
+      .catch(() => notifyZipFail())
+      .finally(() => setZipping(false))
+  }
 
   return (
     <section aria-label="Received files" className="rounded-2xl border border-primary/30 bg-primary/5 shadow-sm animate-fade-up">
@@ -329,34 +343,49 @@ export function ReceivedFiles() {
           <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">{received.length}</span>
           <span className="tnum text-xs font-normal text-muted-foreground">· {formatBytes(totalBytes)}</span>
         </h2>
-        {folderCapable && !saveFolder && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 border-primary/30 bg-background/60"
-            onClick={() => void chooseSaveFolder()}
-            title="Pick a folder once — every received file is written there automatically from then on"
-          >
-            <FolderOpen className="h-3.5 w-3.5 text-primary" aria-hidden />
-            Save to folder…
-          </Button>
-        )}
-        {saveFolder && (
-          <span className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-full border border-primary/30 bg-background/60 px-2.5 py-1 text-xs">
-            <FolderOpen className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden />
-            <span className="truncate font-medium" title={`Saving into “${saveFolder}”`}>
-              {saveFolder}
-            </span>
-            <button
-              type="button"
-              onClick={clearSaveFolder}
-              className="shrink-0 rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              aria-label={`Stop saving into ${saveFolder}`}
+        <div className="flex flex-wrap items-center gap-2">
+          {zipEligible && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 border-primary/30 bg-background/60"
+              onClick={handleZip}
+              disabled={zipping}
+              title={`Bundle all ${received.length} files into one ZIP download`}
             >
-              <X className="h-3 w-3" aria-hidden />
-            </button>
-          </span>
-        )}
+              {zipping ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <FileArchive className="h-3.5 w-3.5 text-primary" aria-hidden />}
+              {zipping ? 'Zipping…' : 'Download all (.zip)'}
+            </Button>
+          )}
+          {folderCapable && !saveFolder && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 border-primary/30 bg-background/60"
+              onClick={() => void chooseSaveFolder()}
+              title="Pick a folder once — every received file is written there automatically from then on"
+            >
+              <FolderOpen className="h-3.5 w-3.5 text-primary" aria-hidden />
+              Save to folder…
+            </Button>
+          )}
+          {saveFolder && (
+            <span className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-full border border-primary/30 bg-background/60 px-2.5 py-1 text-xs">
+              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden />
+              <span className="truncate font-medium" title={`Saving into “${saveFolder}”`}>
+                {saveFolder}
+              </span>
+              <button
+                type="button"
+                onClick={clearSaveFolder}
+                className="shrink-0 rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                aria-label={`Stop saving into ${saveFolder}`}
+              >
+                <X className="h-3 w-3" aria-hidden />
+              </button>
+            </span>
+          )}
+        </div>
       </header>
       <ul className="beam-scroll max-h-72 divide-y divide-primary/10 overflow-y-auto">
         {received.map((file) => (
@@ -392,7 +421,7 @@ export function ReceivedFiles() {
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
-              {file.type.startsWith('image/') && (
+              {previewKind(file) && (
                 <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setPreviewFile(file)} aria-label={`Preview ${file.name}`}>
                   <Eye className="h-4 w-4" />
                 </Button>
@@ -427,13 +456,31 @@ export function ReceivedFiles() {
         ))}
       </ul>
 
-      <ImageLightbox file={previewFile} onClose={() => setPreviewFile(null)} onDownload={() => previewFile && saveReceived(previewFile.id)} />
+      <FilePreviewDialog file={previewFile} onClose={() => setPreviewFile(null)} onDownload={() => previewFile && saveReceived(previewFile.id)} />
     </section>
   )
 }
 
-/** Full-size preview for received images. */
-function ImageLightbox({
+function notifyZipDone() {
+  import('sonner').then(({ toast }) => toast.success('ZIP downloaded', { description: 'All received files bundled into one archive.' }))
+}
+function notifyZipFail() {
+  import('sonner').then(({ toast }) => toast.error('Could not build the ZIP', { description: 'Download the files individually instead.' }))
+}
+
+/** Which inline preview the dialog can render for a file (null = none). */
+export function previewKind(file: ReceivedFile): 'image' | 'video' | 'audio' | 'pdf' | 'text' | null {
+  const t = file.type
+  if (t.startsWith('image/')) return 'image'
+  if (t.startsWith('video/')) return 'video'
+  if (t.startsWith('audio/')) return 'audio'
+  if (t === 'application/pdf') return 'pdf'
+  if (t.startsWith('text/') || /json|xml|javascript|csv|markdown|yaml/.test(t)) return 'text'
+  return null
+}
+
+/** Full preview dialog — images, video, audio, PDF, and text files. */
+function FilePreviewDialog({
   file,
   onClose,
   onDownload,
@@ -442,18 +489,79 @@ function ImageLightbox({
   onClose: () => void
   onDownload: () => void
 }) {
+  const [textState, setTextState] = useState<{ id: string; body: string } | null>(null)
+  const kind = file ? previewKind(file) : null
+
+  useEffect(() => {
+    if (!file || kind !== 'text') return
+    let alive = true
+    void fetch(file.url)
+      .then((r) => r.blob())
+      .then((b) => b.slice(0, 100 * 1024)) // first 100 KB is plenty for a glance
+      .then((slice) => slice.text())
+      .then((body) => {
+        if (alive) setTextState({ id: file.id, body })
+      })
+      .catch(() => {
+        if (alive) setTextState({ id: file.id, body: '// Preview unavailable' })
+      })
+    return () => {
+      alive = false
+    }
+  }, [file, kind])
+
+  const textBody = file && kind === 'text' && textState && textState.id === file.id ? textState.body : null
+
   return (
     <Dialog open={file !== null} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-lg gap-0 overflow-hidden p-0 sm:max-w-2xl">
         {file && (
           <>
             <DialogTitle className="sr-only">Preview of {file.name}</DialogTitle>
-            <div className="flex max-h-[65vh] items-center justify-center bg-zinc-950">
-              <img
-                src={file.url}
-                alt={`Full preview of ${file.name}`}
-                className="max-h-[65vh] w-auto max-w-full animate-fade-up object-contain"
-              />
+            <div className="flex max-h-[65vh] items-center justify-center overflow-hidden bg-zinc-950">
+              {kind === 'image' && (
+                <img
+                  src={file.url}
+                  alt={`Full preview of ${file.name}`}
+                  className="max-h-[65vh] w-auto max-w-full animate-fade-up object-contain"
+                />
+              )}
+              {kind === 'video' && (
+                <video
+                  src={file.url}
+                  controls
+                  autoPlay
+                  playsInline
+                  className="max-h-[65vh] w-full animate-fade-up bg-black"
+                />
+              )}
+              {kind === 'audio' && (
+                <div className="flex w-full flex-col items-center gap-4 bg-gradient-to-b from-zinc-900 to-zinc-950 px-6 py-10 animate-fade-up">
+                  <span className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/15 text-primary">
+                    <FileAudio className="h-8 w-8" aria-hidden />
+                  </span>
+                  <p className="max-w-full truncate text-sm font-medium text-white/90">{file.name}</p>
+                  <audio src={file.url} controls autoPlay className="w-full max-w-sm" />
+                </div>
+              )}
+              {kind === 'pdf' && (
+                <iframe
+                  src={file.url}
+                  title={`PDF preview of ${file.name}`}
+                  className="h-[65vh] w-full animate-fade-up bg-white"
+                />
+              )}
+              {kind === 'text' && (
+                <pre className="beam-scroll max-h-[65vh] w-full animate-fade-up overflow-auto bg-zinc-950 p-4 text-left font-mono text-xs leading-relaxed text-zinc-200">
+                  {textBody ?? 'Loading preview…'}
+                </pre>
+              )}
+              {kind === null && (
+                <div className="flex flex-col items-center gap-3 px-8 py-14 text-center">
+                  <FileTypeIcon type={file.type} name={file.name} className="h-8 w-8 text-zinc-400" />
+                  <p className="text-sm text-zinc-400">No inline preview for this file type — save it to open locally.</p>
+                </div>
+              )}
             </div>
             <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3">
               <div className="min-w-0">

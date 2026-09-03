@@ -293,6 +293,20 @@
   animation: beam-scan 3s ease-in-out infinite;
 }
 
+/* Hero — floating file chips */
+@keyframes beam-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-12px);
+  }
+}
+.beam-float {
+  animation: beam-float 8s ease-in-out infinite;
+}
+
 /* Hero keyword — shimmering gradient text with a drawn-in underline */
 @keyframes beam-shimmer-text {
   from {
@@ -348,6 +362,7 @@
   .hero-shimmer::after,
   .animate-beam-ping,
   .beam-scan-line,
+  .beam-float,
   .progress-shine::after {
     animation: none;
   }

@@ -30,8 +30,14 @@ export function DesktopApp() {
 
   return (
     <div className="flex min-h-screen flex-col">
+      <a
+        href="#beam-main"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:shadow-lg"
+      >
+        Skip to content
+      </a>
       <SiteHeader view={view} onNavigate={setView} />
-      <main className="flex-1">
+      <main id="beam-main" className="flex-1">
         {view === 'transfer' && <TransferView />}
         {view === 'history' && <HistoryView />}
         {view === 'about' && <AboutView />}

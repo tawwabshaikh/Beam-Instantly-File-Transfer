@@ -36,6 +36,20 @@ export function recordHistory(entry: Omit<HistoryEntry, 'id' | 'createdAt'>): vo
   if (typeof window === 'undefined') return
   try {
     const entries = loadHistory()
+    // Same-transfer guard: two tabs of one browser (or a rare engine double-fire)
+    // can record the identical transfer within a moment — keep one entry.
+    const last = entries[0]
+    if (
+      last &&
+      last.name === entry.name &&
+      last.size === entry.size &&
+      last.direction === entry.direction &&
+      last.status === entry.status &&
+      last.sessionCode === entry.sessionCode &&
+      Date.now() - last.createdAt < 3_000
+    ) {
+      return
+    }
     const full: HistoryEntry = {
       ...entry,
       id: genId(),

@@ -2,7 +2,11 @@
 
 import {
   ArrowRight,
+  FileArchive,
+  FileImage,
+  FileText,
   FileUp,
+  FileVideo2,
   Globe2,
   Lock,
   MoveRight,
@@ -37,6 +41,7 @@ function Hero({ onStart }: { onStart: () => void }) {
         aria-hidden
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_60%_50%_at_50%_-10%,--theme(--color-primary/8%),transparent)]"
       />
+      <FloatingChips />
       <div className="relative mx-auto flex w-full max-w-5xl flex-col items-center px-4 pb-4 pt-16 text-center sm:px-6 sm:pt-24">
         <span className="mb-5 inline-flex items-center gap-2 rounded-full border border-border bg-card px-3.5 py-1.5 text-xs font-medium text-muted-foreground shadow-sm">
           <Lock className="h-3.5 w-3.5 text-primary" aria-hidden />
@@ -69,6 +74,31 @@ function Hero({ onStart }: { onStart: () => void }) {
         </p>
       </div>
     </section>
+  )
+}
+
+/** Decorative file chips drifting around the hero headline (desktop only). */
+const CHIPS = [
+  { icon: FileImage, label: 'beach-sunset.jpg', className: 'left-[6%] top-[24%] -rotate-6', duration: '7s', delay: '0s' },
+  { icon: FileVideo2, label: 'trip-highlight.mp4', className: 'right-[7%] top-[30%] rotate-3', duration: '8.5s', delay: '0.8s' },
+  { icon: FileText, label: 'notes.pdf', className: 'left-[13%] bottom-[8%] rotate-2', duration: '9s', delay: '1.6s' },
+  { icon: FileArchive, label: 'project.zip', className: 'right-[13%] bottom-[4%] -rotate-3', duration: '7.8s', delay: '0.4s' },
+]
+
+function FloatingChips() {
+  return (
+    <div aria-hidden className="pointer-events-none absolute inset-0 hidden lg:block">
+      {CHIPS.map((chip) => (
+        <span
+          key={chip.label}
+          className={`absolute flex items-center gap-2 rounded-xl border border-border/80 bg-card/90 px-3 py-2 text-xs font-medium text-muted-foreground shadow-md shadow-black/5 backdrop-blur-sm beam-float ${chip.className}`}
+          style={{ animationDuration: chip.duration, animationDelay: chip.delay }}
+        >
+          <chip.icon className="h-3.5 w-3.5 text-primary" />
+          {chip.label}
+        </span>
+      ))}
+    </div>
   )
 }
 
