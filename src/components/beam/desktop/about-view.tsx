@@ -1,6 +1,7 @@
 'use client'
 
 import { ArrowRightLeft, Cpu, FileWarning, Globe2, KeyRound, Lock, QrCode, ShieldCheck, Timer, Trash2, WifiOff } from 'lucide-react'
+import { SESSION_TTL_MINUTES } from '@/lib/beam/config'
 
 const SECURITY_ITEMS = [
   {
@@ -10,8 +11,8 @@ const SECURITY_ITEMS = [
   },
   {
     icon: Timer,
-    title: '10-minute expiry',
-    body: 'Sessions self-destruct after 10 minutes. Once expired, the QR link is useless — scans fail safely and the session is wiped from memory.',
+    title: `${SESSION_TTL_MINUTES}-minute expiry`,
+    body: `Sessions self-destruct after ${SESSION_TTL_MINUTES} minutes. Once expired, the QR link is useless — scans fail safely and the session is wiped from memory.`,
   },
   {
     icon: Lock,
@@ -60,7 +61,7 @@ export function AboutView() {
           <ol className="space-y-3 text-sm text-muted-foreground">
             <li className="flex gap-3">
               <Step n={1} />
-              <span><strong className="text-foreground">Session created.</strong> Your desktop generates a temporary session (code + token, 10-minute TTL) on the signaling service. File names and sizes are registered — never contents.</span>
+              <span><strong className="text-foreground">Session created.</strong> Your desktop generates a temporary session (code + token, {SESSION_TTL_MINUTES}-minute TTL) on the signaling service. File names and sizes are registered — never contents.</span>
             </li>
             <li className="flex gap-3">
               <Step n={2} />

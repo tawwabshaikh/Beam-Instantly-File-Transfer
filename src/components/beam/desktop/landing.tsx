@@ -13,6 +13,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { SESSION_TTL_MINUTES } from '@/lib/beam/config'
 
 export function LandingSections({ onStart }: { onStart: () => void }) {
   return (
@@ -156,7 +157,7 @@ const FEATURES = [
   {
     icon: Lock,
     title: 'Secure by design',
-    body: 'Cryptographic pairing tokens, 10-minute expiry, encryption in transit, zero storage.',
+    body: `Cryptographic pairing tokens, ${SESSION_TTL_MINUTES}-minute expiry, encryption in transit, zero storage.`,
   },
   {
     icon: Package,

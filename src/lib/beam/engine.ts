@@ -10,7 +10,7 @@ import {
   type TransferDirection,
   type TransportMode,
 } from './protocol'
-import { SIGNALING_WS_URL } from './config'
+import { SESSION_TTL_MINUTES, SIGNALING_WS_URL } from './config'
 import {
   CHANNEL_D2P,
   CHANNEL_P2D,
@@ -96,6 +96,8 @@ export interface BeamState {
   phase: BeamPhase
   error: { title: string; message: string } | null
   session: BeamSession | null
+  /** Requested session length in minutes (picked on the desktop before pairing). */
+  ttlMinutes: number
   selectedFiles: SelectedFile[]
   manifest: FileMeta[]
   mobileFiles: SelectedFile[]
@@ -113,6 +115,7 @@ interface BeamActions {
   addFiles(files: FileList | File[]): void
   removeSelectedFile(id: string): void
   reorderSelectedFiles(fromId: string, toId: string): void
+  setTtlMinutes(minutes: number): void
   createNewSession(): Promise<void>
   endSession(): Promise<void>
   resetAll(): void
@@ -1064,6 +1067,7 @@ const initialState: BeamState = {
   phase: 'idle',
   error: null,
   session: null,
+  ttlMinutes: SESSION_TTL_MINUTES,
   selectedFiles: [],
   manifest: [],
   mobileFiles: [],
@@ -1135,6 +1139,19 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
     publishManifestIfHost()
   },
 
+  setTtlMinutes(minutes: number) {
+    const clamped = Math.min(60, Math.max(1, Math.round(minutes)))
+    const st = get()
+    if (st.phase === 'connected' || st.phase === 'connecting' || st.phase === 'creating') return
+    set({ ttlMinutes: clamped })
+    // Session already live but the phone hasn't paired yet: recreate it so
+    // the QR link carries the new expiry. Files are kept; transfers/received
+    // are empty in this phase, so the reset is lossless.
+    if (st.session && st.role === 'host' && st.selectedFiles.length > 0) {
+      void get().createNewSession()
+    }
+  },
+
   /* ---------------- desktop: session lifecycle ---------------- */
 
   async createNewSession() {
@@ -1145,11 +1162,12 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
     destroyPeer()
     sendQueue = []
     sendActive = false
-    set({ ...initialState, selectedFiles: files, role: 'host', phase: 'creating' })
+    const ttlMinutes = get().ttlMinutes
+    set({ ...initialState, selectedFiles: files, role: 'host', phase: 'creating', ttlMinutes })
 
     try {
       const metas = files.map((f) => ({ id: f.id, name: f.name, size: f.size, type: f.type }))
-      const res = await api.createSession(metas)
+      const res = await api.createSession(metas, ttlMinutes)
       const joinUrl =
         typeof window !== 'undefined'
           ? `${window.location.origin}/?s=${encodeURIComponent(res.code)}&t=${encodeURIComponent(res.token)}`
@@ -1449,6 +1467,6 @@ if (typeof window !== 'undefined') {
     store: useBeamStore, // QA only: full zustand API (setState, subscribe, …)
     debug: beamDebug,
     storeId: Math.random().toString(36).slice(2, 8),
-    version: 4,
+    version: 5,
   }
 }

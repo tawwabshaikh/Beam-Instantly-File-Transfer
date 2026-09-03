@@ -13,16 +13,19 @@ import {
   FolderOpen,
   HardDrive,
   Loader2,
+  Maximize2,
   RotateCcw,
   Timer,
   X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Progress } from '@/components/ui/progress'
-import { useBeamStore, type TransferRow } from '@/lib/beam/engine'
+import { useBeamStore, type ReceivedFile, type TransferRow } from '@/lib/beam/engine'
 import { formatBytes, formatDuration, formatRelativeTime, formatSpeed } from '@/lib/beam/format'
 import { describeDevice } from '@/lib/beam/device'
 import { EXTEND_WINDOW_MS } from '@/lib/beam/protocol'
+import { SESSION_TTL_MINUTES } from '@/lib/beam/config'
 import { FileTypeIcon } from '@/components/beam/desktop/dropzone'
 import { SpeedSparkline } from '@/components/beam/speed-sparkline'
 import { useCountdown } from '@/hooks/use-countdown'
@@ -118,7 +121,7 @@ function StatCard({
 }
 
 /**
- * Host-only: resets the session countdown back to a full 10 minutes.
+ * Host-only: resets the session countdown back to a full TTL.
  * The service accepts extends only within the last EXTEND_WINDOW_MS,
  * so the control is hidden/disabled outside that window.
  */
@@ -135,10 +138,10 @@ export function ExtendButton({ expiresAt, className }: { expiresAt: number; clas
       className={cn('h-8', className)}
       onClick={extendSession}
       disabled={!canExtend}
-      title={canExtend ? 'Reset the session countdown to a fresh 10 minutes' : 'Available during the last 5 minutes'}
+      title={canExtend ? `Reset the session countdown to a fresh ${SESSION_TTL_MINUTES} minutes` : 'Available during the last 5 minutes'}
     >
       <Timer className="h-4 w-4 text-primary" aria-hidden />
-      Extend +10 min
+      Extend +{SESSION_TTL_MINUTES} min
     </Button>
   )
 }
@@ -301,6 +304,7 @@ export function ReceivedFiles() {
   const received = useBeamStore((s) => s.received)
   const saveReceived = useBeamStore((s) => s.saveReceived)
   const dismissReceived = useBeamStore((s) => s.dismissReceived)
+  const [previewFile, setPreviewFile] = useState<ReceivedFile | null>(null)
 
   if (received.length === 0) return null
 
@@ -317,11 +321,22 @@ export function ReceivedFiles() {
         {received.map((file) => (
           <li key={file.id} className="animate-row-in flex items-center gap-3 px-4 py-3 transition-colors hover:bg-primary/5">
             {file.type.startsWith('image/') ? (
-              <img
-                src={file.url}
-                alt={`Preview of ${file.name}`}
-                className="h-10 w-10 shrink-0 rounded-lg border border-border object-cover"
-              />
+              <button
+                type="button"
+                onClick={() => setPreviewFile(file)}
+                className="group/thumb relative shrink-0 overflow-hidden rounded-lg border border-border"
+                aria-label={`Open preview of ${file.name}`}
+              >
+                <img
+                  src={file.url}
+                  alt={`Preview of ${file.name}`}
+                  className="h-10 w-10 object-cover transition-transform duration-200 group-hover/thumb:scale-110"
+                  loading="lazy"
+                />
+                <span className="absolute inset-0 flex items-center justify-center bg-black/45 opacity-0 transition-opacity group-hover/thumb:opacity-100">
+                  <Maximize2 className="h-3.5 w-3.5 text-white" aria-hidden />
+                </span>
+              </button>
             ) : (
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
                 <FileTypeIcon type={file.type} name={file.name} className="h-4.5 w-4.5" />
@@ -337,10 +352,8 @@ export function ReceivedFiles() {
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               {file.type.startsWith('image/') && (
-                <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
-                  <a href={file.url} target="_blank" rel="noreferrer" aria-label={`Preview ${file.name}`}>
-                    <Eye className="h-4 w-4" />
-                  </a>
+                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setPreviewFile(file)} aria-label={`Preview ${file.name}`}>
+                  <Eye className="h-4 w-4" />
                 </Button>
               )}
               <Button variant="secondary" size="sm" className="h-8" onClick={() => saveReceived(file.id)}>
@@ -372,7 +385,49 @@ export function ReceivedFiles() {
           </li>
         ))}
       </ul>
+
+      <ImageLightbox file={previewFile} onClose={() => setPreviewFile(null)} onDownload={() => previewFile && saveReceived(previewFile.id)} />
     </section>
+  )
+}
+
+/** Full-size preview for received images. */
+function ImageLightbox({
+  file,
+  onClose,
+  onDownload,
+}: {
+  file: ReceivedFile | null
+  onClose: () => void
+  onDownload: () => void
+}) {
+  return (
+    <Dialog open={file !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-lg gap-0 overflow-hidden p-0 sm:max-w-2xl">
+        {file && (
+          <>
+            <DialogTitle className="sr-only">Preview of {file.name}</DialogTitle>
+            <div className="flex max-h-[65vh] items-center justify-center bg-zinc-950">
+              <img
+                src={file.url}
+                alt={`Full preview of ${file.name}`}
+                className="max-h-[65vh] w-auto max-w-full animate-fade-up object-contain"
+              />
+            </div>
+            <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">{file.name}</p>
+                <p className="tnum text-xs text-muted-foreground">{formatBytes(file.size)} · {file.type}</p>
+              </div>
+              <Button size="sm" onClick={onDownload}>
+                <Download className="h-4 w-4" aria-hidden />
+                Save
+              </Button>
+            </div>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 

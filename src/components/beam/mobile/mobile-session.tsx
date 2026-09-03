@@ -22,6 +22,7 @@ import {
   X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { SESSION_TTL_MINUTES } from '@/lib/beam/config'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import { useBeamStore, type TransferRow } from '@/lib/beam/engine'
@@ -358,12 +359,25 @@ function MobileFileRow({ fileId, flash = false }: { fileId: string; flash?: bool
   const busy = row && (row.status === 'queued' || row.status === 'active')
   const failed = row?.status === 'error'
   const done = rows.some((r) => r.status === 'done')
+  // Once downloaded, images get a real thumbnail from the received blob.
+  const receivedThumb = done && file.type.startsWith('image/')
+    ? useBeamStore.getState().received.find((r) => r.name === file.name && r.size === file.size)?.url ?? null
+    : null
 
   return (
     <li className={cn('flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/40', flash && 'animate-flash')}>
-      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
-        <FileTypeIcon type={file.type} name={file.name} className="h-4.5 w-4.5" />
-      </span>
+      {receivedThumb ? (
+        <img
+          src={receivedThumb}
+          alt=""
+          className="h-10 w-10 shrink-0 rounded-lg border border-border object-cover"
+          loading="lazy"
+        />
+      ) : (
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
+          <FileTypeIcon type={file.type} name={file.name} className="h-4.5 w-4.5" />
+        </span>
+      )}
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium" title={file.name}>
           {file.name}
@@ -484,9 +498,18 @@ function SendToDesktop({
             const row = rows.filter((r) => r.fileId === f.id).at(-1)
             return (
               <li key={f.id} className="flex items-center gap-3 px-4 py-3">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted">
-                  <FileTypeIcon type={f.type} name={f.name} className="h-4 w-4" />
-                </span>
+                {f.previewUrl ? (
+                  <img
+                    src={f.previewUrl}
+                    alt=""
+                    className="h-9 w-9 shrink-0 rounded-lg border border-border object-cover"
+                    loading="lazy"
+                  />
+                ) : (
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted">
+                    <FileTypeIcon type={f.type} name={f.name} className="h-4 w-4" />
+                  </span>
+                )}
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{f.name}</p>
                   <p className="tnum text-xs text-muted-foreground">
@@ -573,7 +596,7 @@ function ExpiredView() {
       </span>
       <p className="mt-4 font-semibold">Session expired</p>
       <p className="mt-1 text-sm text-muted-foreground">
-        This pairing session expired after 10 minutes. Ask the desktop for a fresh QR code.
+        This pairing session expired after {SESSION_TTL_MINUTES} minutes. Ask the desktop for a fresh QR code.
       </p>
       <StartOverLink />
     </StateShell>

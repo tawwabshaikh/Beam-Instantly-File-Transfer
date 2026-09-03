@@ -61,10 +61,11 @@ export interface SessionInfoResponse {
 
 export async function createSession(
   files: { id: string; name: string; size: number; type: string }[],
+  ttlMinutes?: number,
 ): Promise<CreatedSession> {
   return request<CreatedSession>(`${BASE}/api/sessions`, {
     method: 'POST',
-    body: JSON.stringify({ files }),
+    body: JSON.stringify(ttlMinutes !== undefined ? { files, ttlMinutes } : { files }),
   })
 }
 

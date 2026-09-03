@@ -14,6 +14,7 @@ import { HistoryView } from '@/components/beam/desktop/history-view'
 import { AboutView } from '@/components/beam/desktop/about-view'
 import { useBeamStore } from '@/lib/beam/engine'
 import { formatCountdown } from '@/lib/beam/format'
+import { SESSION_TTL_MINUTES } from '@/lib/beam/config'
 import { useCountdown } from '@/hooks/use-countdown'
 
 export function DesktopApp() {
@@ -152,7 +153,7 @@ function TerminalState() {
       ? {
           icon: Clock,
           title: 'Session expired',
-          body: 'For your security, sessions are destroyed 10 minutes after creation. Nothing was kept.',
+          body: `For your security, sessions are destroyed ${SESSION_TTL_MINUTES} minutes after creation. Nothing was kept.`,
           tone: 'text-amber-600 dark:text-amber-400',
           bg: 'bg-amber-500/10 border-amber-500/30',
         }

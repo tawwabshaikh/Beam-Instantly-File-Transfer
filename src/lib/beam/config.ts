@@ -15,6 +15,12 @@ function envList(value: string | undefined, fallback: string[]): string[] {
     .filter(Boolean)
 }
 
+function envInt(value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number.parseInt(value ?? '', 10)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(max, Math.max(min, parsed))
+}
+
 /** socket.io endpoint for the signaling/session service. */
 export const SIGNALING_WS_URL =
   process.env.NEXT_PUBLIC_SIGNALING_WS_URL ?? '/?XTransformPort=3003'
@@ -45,5 +51,12 @@ export function getIceServers(): RTCIceServer[] {
   return servers
 }
 
-/** Session lifetime in minutes (server enforces its own env too). */
-export const SESSION_TTL_MINUTES = 10
+/**
+ * Default session lifetime in minutes. Configurable via
+ * NEXT_PUBLIC_SESSION_TTL_MINUTES (clamped 1–60, matching the service's own
+ * server-side clamp) and selectable per-session in the desktop UI.
+ */
+export const SESSION_TTL_MINUTES = envInt(process.env.NEXT_PUBLIC_SESSION_TTL_MINUTES, 10, 1, 60)
+
+/** Choices offered in the desktop session-length picker (minutes). */
+export const TTL_CHOICES = [5, 10, 15, 30] as const

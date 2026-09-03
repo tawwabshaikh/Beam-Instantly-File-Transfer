@@ -10,6 +10,7 @@ import {
   Image as ImageIcon,
   Music,
   Paperclip,
+  Timer,
   UploadCloud,
   X,
   GripVertical,
@@ -29,8 +30,10 @@ import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalList
 import { CSS } from '@dnd-kit/utilities'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useBeamStore, type SelectedFile } from '@/lib/beam/engine'
 import { formatBytes } from '@/lib/beam/format'
+import { TTL_CHOICES } from '@/lib/beam/config'
 import { cn } from '@/lib/utils'
 
 /* ------------------------------------------------------------------ */
@@ -290,6 +293,7 @@ export function FilesCard({ compact = false }: { compact?: boolean }) {
           </SortableContext>
         </DndContext>
       </ScrollArea>
+      {!locked && <TtlPicker />}
       {locked && (
         <p className="border-t border-border/70 px-4 py-2 text-xs text-muted-foreground">
           File picker is locked while a device is paired — you can still{' '}
@@ -297,6 +301,39 @@ export function FilesCard({ compact = false }: { compact?: boolean }) {
         </p>
       )}
     </section>
+  )
+}
+
+/**
+ * Session-length picker — visible before pairing only (locked once a
+ * session exists; the QR link encodes the server-enforced expiry).
+ */
+function TtlPicker() {
+  const ttlMinutes = useBeamStore((s) => s.ttlMinutes)
+  const setTtlMinutes = useBeamStore((s) => s.setTtlMinutes)
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 bg-muted/30 px-4 py-2.5">
+      <p className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Timer className="h-3.5 w-3.5 text-primary" aria-hidden />
+        QR link expires after
+      </p>
+      <Select value={String(ttlMinutes)} onValueChange={(v) => setTtlMinutes(Number(v))}>
+        <SelectTrigger
+          className="h-8 w-[130px] rounded-lg border-border/80 bg-background text-xs font-medium"
+          aria-label="Session length in minutes"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {TTL_CHOICES.map((m) => (
+            <SelectItem key={m} value={String(m)} className="text-xs">
+              {m} minutes
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
   )
 }
 

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Beam — You're offline</title>
+<meta name="theme-color" content="#10b981" />
+<link rel="icon" href="/favicon-48.png" sizes="48x48" />
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-height: 100vh; padding: 24px; text-align: center;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #fafafa; color: #18181b;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #09090b; color: #fafafa; }
+    .card { background: rgba(255,255,255,0.03) !important; }
+    .dot { background: #18181b !important; }
+  }
+  .mark {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 72px; height: 72px; border-radius: 20px; margin-bottom: 24px;
+    background: linear-gradient(135deg, #10b981, #0d9488);
+    box-shadow: 0 12px 32px -12px rgba(16,185,129,0.55);
+    animation: pop 0.45s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+  }
+  .mark svg { width: 38px; height: 38px; }
+  h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
+  p { margin-top: 10px; max-width: 26rem; font-size: 0.925rem; line-height: 1.55; color: #71717a; }
+  .card {
+    margin-top: 28px; padding: 14px 20px; border-radius: 14px;
+    border: 1px solid rgba(16,185,129,0.25); background: rgba(16,185,129,0.06);
+    font-size: 0.8rem; color: #059669; display: inline-flex; align-items: center; gap: 8px;
+  }
+  .card svg { width: 15px; height: 15px; flex: none; }
+  button {
+    margin-top: 26px; height: 46px; padding: 0 28px; border: 0; border-radius: 12px;
+    font: inherit; font-size: 0.925rem; font-weight: 600; cursor: pointer;
+    background: #10b981; color: #fff;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+  }
+  button:hover { background: #059669; transform: translateY(-1px); box-shadow: 0 10px 24px -10px rgba(16,185,129,0.6); }
+  button:active { transform: translateY(0); }
+  .footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 14px; font-size: 0.72rem; color: #a1a1aa; }
+  @keyframes pop { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: scale(1); } }
+</style>
+</head>
+<body>
+  <span class="mark" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M13 2 4.5 13.5 H11 L9.5 22 19 9.5 H12.5 Z" fill="#fff" stroke="none"/>
+    </svg>
+  </span>
+  <h1>You&rsquo;re offline</h1>
+  <p>Beam needs a live connection to pair devices and move files &mdash; nothing was ever stored on a server to fall back on. Check your network and try again.</p>
+  <div class="card">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    Your files never touched our servers &mdash; there is nothing to lose
+  </div>
+  <button onclick="location.reload()" type="button">Retry connection</button>
+  <div class="footer">Beam &mdash; instant file transfer between devices</div>
+</body>
+</html>
