@@ -19,6 +19,7 @@ import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { clearHistory, downloadHistoryCsv, loadHistory, type HistoryEntry } from '@/lib/beam/history'
 import { formatBytes, formatRelativeTime } from '@/lib/beam/format'
+import { useLang } from '@/lib/beam/i18n'
 import { FileTypeIcon } from '@/components/beam/desktop/dropzone'
 import { cn } from '@/lib/utils'
 
@@ -60,6 +61,7 @@ function subscribeHistory(onChange: () => void): () => void {
 }
 
 export function HistoryView() {
+  const { t } = useLang()
   const entries = useSyncExternalStore(subscribeHistory, getHistorySnapshot, getServerSnapshot)
   const [query, setQuery] = useState('')
   const [direction, setDirection] = useState<DirectionFilter>('all')
@@ -84,9 +86,9 @@ export function HistoryView() {
     <div className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 sm:py-14">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Transfer history</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{t('hist.title')}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Stored only in this browser — never on our servers. File contents are not kept.
+            {t('hist.sub')}
           </p>
         </div>
         {entries.length > 0 && (
@@ -95,10 +97,10 @@ export function HistoryView() {
               variant="outline"
               size="sm"
               onClick={() => downloadHistoryCsv(entries)}
-              aria-label={`Export ${entries.length} history entries as CSV`}
+              aria-label={t('hist.exportCsvAria', { n: entries.length })}
             >
               <Download className="h-4 w-4" aria-hidden />
-              Export CSV
+              {t('hist.exportCsv')}
             </Button>
             <Button
               variant="outline"
@@ -107,7 +109,7 @@ export function HistoryView() {
               onClick={() => clearHistory()}
             >
               <Trash2 className="h-4 w-4" aria-hidden />
-              Clear history
+              {t('hist.clear')}
             </Button>
           </div>
         )}
@@ -117,7 +119,7 @@ export function HistoryView() {
         <>
           <dl className="mt-5 grid grid-cols-3 gap-3">
             <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
-              <dt className="text-xs font-medium text-muted-foreground">Transfers</dt>
+              <dt className="text-xs font-medium text-muted-foreground">{t('hist.stat.transfers')}</dt>
               <dd className="tnum mt-0.5 text-lg font-semibold">
                 {completed}
                 {completed !== entries.length && (
@@ -126,11 +128,11 @@ export function HistoryView() {
               </dd>
             </div>
             <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
-              <dt className="text-xs font-medium text-muted-foreground">Data moved</dt>
+              <dt className="text-xs font-medium text-muted-foreground">{t('hist.stat.data')}</dt>
               <dd className="tnum mt-0.5 text-lg font-semibold">{formatBytes(totalBytes)}</dd>
             </div>
             <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
-              <dt className="text-xs font-medium text-muted-foreground">Success rate</dt>
+              <dt className="text-xs font-medium text-muted-foreground">{t('hist.stat.success')}</dt>
               <dd className="tnum mt-0.5 text-lg font-semibold">
                 {entries.length === 0 ? '—' : `${Math.round((completed / entries.length) * 100)}%`}
               </dd>
@@ -144,15 +146,15 @@ export function HistoryView() {
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search file names or session codes…"
-                aria-label="Search history"
+                placeholder={t('hist.search.placeholder')}
+                aria-label={t('hist.search.aria')}
                 className="h-9 bg-background pl-9"
               />
               {query && (
                 <button
                   type="button"
                   onClick={() => setQuery('')}
-                  aria-label="Clear search"
+                  aria-label={t('hist.search.clear')}
                   className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 >
                   <X className="h-3.5 w-3.5" aria-hidden />
@@ -162,24 +164,26 @@ export function HistoryView() {
             <div className="flex flex-wrap items-center gap-3">
               <FilterGroup
                 icon={ArrowDownLeft}
-                label="Direction"
+                label={t('hist.filter.direction')}
+                ariaLabel={t('hist.aria.byDirection')}
                 value={direction}
                 onChange={setDirection}
                 options={[
-                  { value: 'all', label: 'All' },
-                  { value: 'd2p', label: 'To phone' },
-                  { value: 'p2d', label: 'To desktop' },
+                  { value: 'all', label: t('hist.filter.all') },
+                  { value: 'd2p', label: t('hist.filter.toPhone') },
+                  { value: 'p2d', label: t('hist.filter.toDesktop') },
                 ]}
               />
               <FilterGroup
                 icon={SlidersHorizontal}
-                label="Status"
+                label={t('hist.filter.status')}
+                ariaLabel={t('hist.aria.byStatus')}
                 value={status}
                 onChange={setStatus}
                 options={[
-                  { value: 'all', label: 'All' },
-                  { value: 'completed', label: 'Done' },
-                  { value: 'failed', label: 'Failed' },
+                  { value: 'all', label: t('hist.filter.all') },
+                  { value: 'completed', label: t('hist.filter.done') },
+                  { value: 'failed', label: t('hist.filter.failed') },
                 ]}
               />
             </div>
@@ -194,8 +198,8 @@ export function HistoryView() {
           <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-muted">
             <Search className="h-5 w-5 text-muted-foreground" aria-hidden />
           </span>
-          <p className="mt-3 text-sm font-medium">No transfers match</p>
-          <p className="mt-1 text-xs text-muted-foreground">Try a different search or reset the filters.</p>
+          <p className="mt-3 text-sm font-medium">{t('hist.noMatch.title')}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t('hist.noMatch.sub')}</p>
           <Button
             variant="outline"
             size="sm"
@@ -206,14 +210,14 @@ export function HistoryView() {
               setStatus('all')
             }}
           >
-            Reset filters
+            {t('hist.reset')}
           </Button>
         </div>
       ) : (
         <>
           {filtersActive && (
             <p className="tnum mt-5 text-xs text-muted-foreground" aria-live="polite">
-              Showing {filtered.length} of {entries.length} transfers
+              {t('hist.showing', { shown: filtered.length, total: entries.length })}
             </p>
           )}
           <ScrollArea className="beam-scroll mt-3 max-h-[52vh] pr-3" type="always">
@@ -232,18 +236,20 @@ export function HistoryView() {
 function FilterGroup<T extends string>({
   icon: Icon,
   label,
+  ariaLabel,
   value,
   onChange,
   options,
 }: {
   icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' }>
   label: string
+  ariaLabel: string
   value: T
   onChange: (v: T) => void
   options: { value: T; label: string }[]
 }) {
   return (
-    <div className="flex items-center gap-1.5" role="group" aria-label={`Filter by ${label.toLowerCase()}`}>
+    <div className="flex items-center gap-1.5" role="group" aria-label={ariaLabel}>
       <span className="flex items-center gap-1 text-xs text-muted-foreground">
         <Icon className="h-3.5 w-3.5" aria-hidden />
         {label}
@@ -271,6 +277,7 @@ function FilterGroup<T extends string>({
 }
 
 function HistoryRow({ entry }: { entry: HistoryEntry }) {
+  const { t } = useLang()
   return (
     <li
       className="flex animate-row-in items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 shadow-sm transition-colors duration-150 hover:border-primary/30 hover:bg-accent/40"
@@ -284,7 +291,7 @@ function HistoryRow({ entry }: { entry: HistoryEntry }) {
         </p>
         <p className="tnum text-xs text-muted-foreground">
           {formatBytes(entry.size)} · {formatRelativeTime(entry.createdAt)}
-          {entry.sessionCode ? ` · session ${entry.sessionCode}` : ''}
+          {entry.sessionCode ? ` · ${t('hist.session', { code: entry.sessionCode })}` : ''}
         </p>
       </div>
       <div className="flex shrink-0 flex-col items-end gap-1 sm:flex-row sm:items-center sm:gap-2">
@@ -301,7 +308,7 @@ function HistoryRow({ entry }: { entry: HistoryEntry }) {
           ) : (
             <ArrowUpRight className="h-3 w-3" aria-hidden />
           )}
-          {entry.direction === 'd2p' ? 'Desktop → Phone' : 'Phone → Desktop'}
+          {entry.direction === 'd2p' ? t('hist.dir.d2p') : t('hist.dir.p2d')}
         </Badge>
         <span
           className={
@@ -315,7 +322,7 @@ function HistoryRow({ entry }: { entry: HistoryEntry }) {
           ) : (
             <CircleAlert className="h-3.5 w-3.5" aria-hidden />
           )}
-          {entry.status === 'completed' ? 'Completed' : 'Failed'}
+          {entry.status === 'completed' ? t('hist.status.completed') : t('hist.status.failed')}
         </span>
       </div>
     </li>
@@ -323,14 +330,15 @@ function HistoryRow({ entry }: { entry: HistoryEntry }) {
 }
 
 function EmptyHistory() {
+  const { t } = useLang()
   return (
     <div className="mt-6 flex flex-col items-center rounded-2xl border border-dashed border-border bg-card/50 px-6 py-14 text-center">
       <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted">
         <Inbox className="h-6 w-6 text-muted-foreground" aria-hidden />
       </span>
-      <p className="mt-4 font-medium">No transfers yet</p>
+      <p className="mt-4 font-medium">{t('hist.empty.title')}</p>
       <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-        Completed transfers from this device will show up here — with direction, size, and status.
+        {t('hist.empty.sub')}
       </p>
     </div>
   )

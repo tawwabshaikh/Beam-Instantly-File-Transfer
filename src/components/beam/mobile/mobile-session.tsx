@@ -25,8 +25,8 @@ import {
   X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
 import { SESSION_TTL_MINUTES } from '@/lib/beam/config'
+import type { OptimizePreset } from '@/lib/beam/compress'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import { useBeamStore, type TransferRow } from '@/lib/beam/engine'
@@ -39,6 +39,7 @@ import { SharedTextBanner } from '@/components/beam/shared/shared-text-banner'
 import { QrScannerDialog } from '@/components/beam/shared/qr-scanner'
 import { useCountdown } from '@/hooks/use-countdown'
 import { useSoundMuted } from '@/hooks/use-sound-muted'
+import { useLang } from '@/lib/beam/i18n'
 import { cn } from '@/lib/utils'
 
 /**
@@ -50,6 +51,7 @@ export function MobileSession({ code, token }: { code: string; token: string }) 
   const session = useBeamStore((s) => s.session)
   const openSession = useBeamStore((s) => s.openSession)
   const resetAll = useBeamStore((s) => s.resetAll)
+  const { t } = useLang()
 
   useEffect(() => {
     void openSession(code, token)
@@ -58,7 +60,7 @@ export function MobileSession({ code, token }: { code: string; token: string }) 
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
-      <MobileHeader code={code} expiresAt={session?.expiresAt ?? 0} />
+      <MobileHeader code={code} expiresAt={session?.expiresAt ?? 0} ttlMs={session?.sessionTtlMs ?? 0} />
 
       <main className="mx-auto w-full max-w-md flex-1 px-4 pb-10 pt-5 safe-bottom">
         {phase === 'opening' && <OpeningView />}
@@ -77,7 +79,7 @@ export function MobileSession({ code, token }: { code: string; token: string }) 
       <footer className="border-t border-border/60 px-4 py-3 text-center text-[11px] text-muted-foreground safe-bottom">
         <span className="inline-flex items-center gap-1">
           <ShieldCheck className="h-3 w-3 text-primary" aria-hidden />
-          Encrypted session · Files go device-to-device
+          {t('mob.footer.safe')}
         </span>
       </footer>
     </div>
@@ -88,15 +90,18 @@ export function MobileSession({ code, token }: { code: string; token: string }) 
 /* Header                                                             */
 /* ------------------------------------------------------------------ */
 
-function MobileHeader({ code, expiresAt }: { code: string; expiresAt: number }) {
+function MobileHeader({ code, expiresAt, ttlMs }: { code: string; expiresAt: number; ttlMs: number }) {
   const remaining = useCountdown(expiresAt)
   const { muted, toggle } = useSoundMuted()
+  const { t } = useLang()
 
   useEffect(() => {
     if (!expiresAt) return
     const iv = setInterval(() => useBeamStore.getState().markExpiredIfDue(), 1000)
     return () => clearInterval(iv)
   }, [expiresAt])
+
+  const pct = ttlMs > 0 ? Math.min(100, Math.max(0, (remaining / ttlMs) * 100)) : 0
 
   return (
     <header className="sticky top-0 z-40 border-b border-border/60 bg-background/85 backdrop-blur-md">
@@ -122,12 +127,24 @@ function MobileHeader({ code, expiresAt }: { code: string; expiresAt: number }) 
             size="icon"
             className="h-8 w-8 text-muted-foreground"
             onClick={toggle}
-            aria-label={muted ? 'Turn sound on' : 'Turn sound off'}
+            aria-label={muted ? t('mob.sound.on') : t('mob.sound.off')}
           >
             {muted ? <VolumeX className="h-4 w-4" aria-hidden /> : <Volume2 className="h-4 w-4" aria-hidden />}
           </Button>
         </div>
       </div>
+      {/* Session-time hairline — drains as the QR validity window closes */}
+      {expiresAt > 0 && ttlMs > 0 && (
+        <div aria-hidden className="h-0.5 w-full bg-border/50">
+          <div
+            className={cn(
+              'h-full transition-[width] duration-1000 ease-linear',
+              remaining < 120_000 ? 'bg-amber-500' : 'bg-primary',
+            )}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
     </header>
   )
 }
@@ -137,17 +154,19 @@ function MobileHeader({ code, expiresAt }: { code: string; expiresAt: number }) 
 /* ------------------------------------------------------------------ */
 
 function OpeningView() {
+  const { t } = useLang()
   return (
     <StateShell>
       <Loader2 className="h-10 w-10 animate-spin text-primary" aria-hidden />
-      <p className="mt-4 font-medium">Opening session…</p>
-      <p className="mt-1 text-sm text-muted-foreground">Validating your secure pairing link</p>
+      <p className="mt-4 font-medium">{t('mob.opening.title')}</p>
+      <p className="mt-1 text-sm text-muted-foreground">{t('mob.opening.sub')}</p>
     </StateShell>
   )
 }
 
 function ConnectingView() {
   const mode = useBeamStore((s) => s.mode)
+  const { t } = useLang()
   return (
     <StateShell>
       <span className="relative flex h-14 w-14 items-center justify-center">
@@ -156,13 +175,13 @@ function ConnectingView() {
           <MonitorSmartphone className="h-6 w-6 text-primary" aria-hidden />
         </span>
       </span>
-      <p className="mt-4 font-medium">Connecting…</p>
+      <p className="mt-4 font-medium">{t('mob.connecting.title')}</p>
       <p className="mt-1 text-sm text-muted-foreground">
-        {mode === 'relay' ? 'Routing through secure relay…' : 'Establishing a secure channel to your desktop'}
+        {mode === 'relay' ? t('mob.connecting.relay') : t('mob.connecting.direct')}
       </p>
       <ul className="mt-6 w-full space-y-2 text-left text-xs text-muted-foreground" aria-hidden>
         <li className="flex items-center gap-2">
-          <CheckCircle2 className="h-3.5 w-3.5 text-primary" /> Link verified
+          <CheckCircle2 className="h-3.5 w-3.5 text-primary" /> {t('mob.connecting.s1')}
         </li>
         <li className="flex items-center gap-2">
           {mode === 'none' ? (
@@ -170,7 +189,7 @@ function ConnectingView() {
           ) : (
             <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
           )}
-          Pairing with desktop
+          {t('mob.connecting.s2')}
         </li>
         <li className="flex items-center gap-2">
           {mode === 'none' ? (
@@ -178,7 +197,7 @@ function ConnectingView() {
           ) : (
             <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
           )}
-          Securing transfer channel
+          {t('mob.connecting.s3')}
         </li>
       </ul>
     </StateShell>
@@ -195,6 +214,7 @@ function ConnectedView() {
   const mode = useBeamStore((s) => s.mode)
   const transfers = useBeamStore((s) => s.transfers)
   const [flashIds, setFlashIds] = useState<string[]>([])
+  const { t } = useLang()
 
   // Highlight rows the desktop added mid-session (engine emits this event)
   useEffect(() => {
@@ -214,11 +234,11 @@ function ConnectedView() {
   }, [])
 
   const d2pRows = useMemo(
-    () => Object.values(transfers).filter((t) => t.direction === 'd2p'),
+    () => Object.values(transfers).filter((tr) => tr.direction === 'd2p'),
     [transfers],
   )
   const p2dRows = useMemo(
-    () => Object.values(transfers).filter((t) => t.direction === 'p2d'),
+    () => Object.values(transfers).filter((tr) => tr.direction === 'p2d'),
     [transfers],
   )
   const d2pActive = d2pRows.some((r) => r.status === 'active' || r.status === 'queued')
@@ -237,14 +257,12 @@ function ConnectedView() {
           <MonitorSmartphone className="h-5 w-5" aria-hidden />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="font-semibold leading-tight">Connected to Desktop</p>
+          <p className="font-semibold leading-tight">{t('mob.banner.title')}</p>
           <p className="text-xs text-muted-foreground">
-            {peerDevice
-              ? 'Your computer is ready to exchange files'
-              : 'Waiting for the computer to appear…'}
+            {peerDevice ? t('mob.banner.ready') : t('mob.banner.waiting')}
           </p>
         </div>
-        <span className="relative flex h-2.5 w-2.5" aria-label="Connection status: connected">
+        <span className="relative flex h-2.5 w-2.5" aria-label={t('mob.banner.aria')}>
           <span className="absolute inline-flex h-full w-full rounded-full bg-primary animate-beam-ping" />
           <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-primary" />
         </span>
@@ -255,7 +273,7 @@ function ConnectedView() {
         <header className="flex items-center justify-between gap-2 border-b border-border/70 px-4 py-3">
           <h2 className="flex items-center gap-2 text-sm font-semibold">
             <ArrowDownToLine className="h-4 w-4 text-primary" aria-hidden />
-            From desktop
+            {t('mob.from.title')}
             {manifest.length > 0 && (
               <span
                 key={manifest.length}
@@ -268,18 +286,16 @@ function ConnectedView() {
           {manifest.length > 1 && (
             <Button size="sm" variant="secondary" className="h-8" onClick={() => useBeamStore.getState().downloadAll()} disabled={d2pActive}>
               <Download className="h-3.5 w-3.5" aria-hidden />
-              Download All
+              {t('mob.from.downloadAll')}
             </Button>
           )}
         </header>
 
         {manifest.length === 0 ? (
           <div className="px-4 py-8 text-center">
-            <p className="text-sm font-medium">No files yet</p>
+            <p className="text-sm font-medium">{t('mob.from.empty.title')}</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              {peerDevice
-                ? 'The desktop hasn’t added any files. Use the send section below to push files to it.'
-                : 'Keep this page open — it will connect automatically.'}
+              {peerDevice ? t('mob.from.empty.peer') : t('mob.from.empty.nopeer')}
             </p>
           </div>
         ) : (
@@ -317,7 +333,7 @@ function ConnectedView() {
       {mode === 'relay' && (
         <p className="flex items-start gap-2 rounded-xl bg-muted/60 px-3.5 py-2.5 text-xs text-muted-foreground">
           <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" aria-hidden />
-          Direct connection wasn’t possible — transfers are relaying through Beam’s secure server. Everything stays encrypted.
+          {t('mob.relay.notice')}
         </p>
       )}
     </div>
@@ -326,6 +342,7 @@ function ConnectedView() {
 
 /** Aggregate progress for a batch of downloads (e.g. "Download All"). */
 function BatchProgress({ rows }: { rows: TransferRow[] }) {
+  const { t } = useLang()
   const relevant = rows.filter((r) => r.status !== 'canceled')
   const total = relevant.reduce((a, r) => a + r.size, 0)
   const done = relevant.reduce((a, r) => a + r.transferred, 0)
@@ -339,7 +356,9 @@ function BatchProgress({ rows }: { rows: TransferRow[] }) {
     <div className="bg-muted/40 px-4 py-2.5">
       <div className="flex items-center justify-between text-xs">
         <span className="font-medium text-foreground">
-          {active > 0 ? `Downloading ${finished + 1} of ${relevant.length}` : `${finished} of ${relevant.length} downloaded`}
+          {active > 0
+            ? t('mob.batch.downloading', { current: finished + 1, total: relevant.length })
+            : t('mob.batch.done', { done: finished, total: relevant.length })}
         </span>
         <span className="tnum text-muted-foreground">
           {formatBytes(done)} / {formatBytes(total)}
@@ -356,10 +375,11 @@ function MobileFileRow({ fileId, flash = false }: { fileId: string; flash?: bool
   const requestDownload = useBeamStore((s) => s.requestDownload)
   const shareReceived = useBeamStore((s) => s.shareReceived)
   const retryTransfer = useBeamStore((s) => s.retryTransfer)
+  const { t } = useLang()
 
   const rows = useMemo(
     () =>
-      Object.values(transfers).filter((t) => t.fileId === fileId && t.direction === 'd2p'),
+      Object.values(transfers).filter((tr) => tr.fileId === fileId && tr.direction === 'd2p'),
     [transfers, fileId],
   )
 
@@ -395,7 +415,7 @@ function MobileFileRow({ fileId, flash = false }: { fileId: string; flash?: bool
           {row?.status === 'active'
             ? `${(row.size > 0 ? (row.transferred / row.size) * 100 : 0).toFixed(0)}% · ${formatSpeed(row.speed)}`
             : failed
-              ? (row?.error ?? 'Download failed')
+              ? (row?.error ?? t('mob.row.failed'))
               : formatBytes(file.size)}
         </p>
       </div>
@@ -409,13 +429,13 @@ function MobileFileRow({ fileId, flash = false }: { fileId: string; flash?: bool
               const rec = useBeamStore.getState().received.find((r) => r.name === file.name)
               if (rec) void shareReceived(rec.id)
             }}
-            aria-label={`Share or re-save ${file.name}`}
+            aria-label={t('mob.row.shareAria', { name: file.name })}
           >
             <Share2 className="h-4 w-4" />
           </Button>
           <span className="inline-flex items-center gap-1 text-xs font-medium text-primary">
             <CheckCircle2 className="h-4 w-4" aria-hidden />
-            Saved
+            {t('mob.row.saved')}
           </span>
         </div>
       ) : failed ? (
@@ -426,12 +446,12 @@ function MobileFileRow({ fileId, flash = false }: { fileId: string; flash?: bool
           onClick={() => retryTransfer(row!.id)}
         >
           <RotateCcw className="h-4 w-4" aria-hidden />
-          Retry
+          {t('mob.row.retry')}
         </Button>
       ) : (
         <Button size="sm" className="h-9 min-w-24" onClick={() => requestDownload(fileId)} disabled={busy}>
           {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Download className="h-4 w-4" aria-hidden />}
-          {busy ? 'Busy…' : 'Download'}
+          {busy ? t('mob.row.busy') : t('mob.row.download')}
         </Button>
       )}
     </li>
@@ -452,19 +472,21 @@ function SendToDesktop({
   const retryTransfer = useBeamStore((s) => s.retryTransfer)
   const mobileFiles = useBeamStore((s) => s.mobileFiles)
   const optimizeUploads = useBeamStore((s) => s.optimizeUploads)
-  const setOptimizeUploads = useBeamStore((s) => s.setOptimizeUploads)
+  const optimizePreset = useBeamStore((s) => s.optimizePreset)
+  const setOptimizePreset = useBeamStore((s) => s.setOptimizePreset)
   const mobileOptimized = useBeamStore((s) => s.mobileOptimized)
   const pickRef = useRef<HTMLInputElement>(null)
   const cameraRef = useRef<HTMLInputElement>(null)
+  const { t } = useLang()
 
   return (
     <section aria-label="Send files to desktop" className="rounded-2xl border border-border bg-card shadow-sm">
       <header className="border-b border-border/70 px-4 py-3">
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           <ArrowUpFromLine className="h-4 w-4 text-purple-600 dark:text-purple-400" aria-hidden />
-          Send files to desktop
+          {t('mob.send.title')}
         </h2>
-        <p className="mt-0.5 text-xs text-muted-foreground">Photos, videos, voice notes — they land on your computer</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">{t('mob.send.sub')}</p>
       </header>
 
       <input
@@ -496,32 +518,58 @@ function SendToDesktop({
       <div className="grid grid-cols-2 gap-2.5 p-4">
         <Button className="h-11 active:scale-[0.98]" onClick={() => pickRef.current?.click()} disabled={disabled}>
           <Plus className="h-4 w-4" aria-hidden />
-          Select Files
+          {t('mob.send.select')}
         </Button>
         <Button variant="outline" className="h-11 active:scale-[0.98]" onClick={() => cameraRef.current?.click()} disabled={disabled}>
           <Camera className="h-4 w-4" aria-hidden />
-          Camera
+          {t('mob.send.camera')}
         </Button>
       </div>
 
       {/* Photo optimization — shrink big camera photos before they hit the wire */}
-      <div className="flex items-center justify-between gap-3 border-t border-border/60 px-4 py-3">
-        <label htmlFor="beam-optimize" className="min-w-0 cursor-pointer select-none">
-          <span className="flex items-center gap-1.5 text-sm font-medium">
-            <Sparkles className="h-3.5 w-3.5 text-primary" aria-hidden />
-            Optimize photos
-          </span>
-          <span className="mt-0.5 block text-xs text-muted-foreground">
-            Shrinks large photos before sending — faster on mobile data
-          </span>
-        </label>
-        <Switch
-          id="beam-optimize"
-          checked={optimizeUploads}
-          onCheckedChange={setOptimizeUploads}
-          aria-label="Optimize photos before sending"
-          className="shrink-0"
-        />
+      <div className="border-t border-border/60 px-4 py-3">
+        <div className="flex items-center gap-1.5">
+          <Sparkles className={cn('h-3.5 w-3.5', optimizeUploads ? 'text-primary' : 'text-muted-foreground')} aria-hidden />
+          <span className="text-sm font-medium">{t('mob.send.optimize')}</span>
+        </div>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          {t(
+            optimizePreset === 'original'
+              ? 'mob.preset.sub.original'
+              : optimizePreset === 'compact'
+                ? 'mob.preset.sub.compact'
+                : 'mob.preset.sub.balanced',
+          )}
+        </p>
+        <div
+          role="radiogroup"
+          aria-label={t('mob.send.optimizeAria')}
+          className="mt-2.5 grid grid-cols-3 gap-1 rounded-xl border border-border bg-muted/60 p-1"
+        >
+          {(
+            [
+              { id: 'original', key: 'mob.preset.original' },
+              { id: 'balanced', key: 'mob.preset.balanced' },
+              { id: 'compact', key: 'mob.preset.compact' },
+            ] as const
+          ).map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              role="radio"
+              aria-checked={optimizePreset === p.id}
+              onClick={() => setOptimizePreset(p.id)}
+              className={cn(
+                'h-9 rounded-lg text-xs font-medium transition-all focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring active:scale-[0.97]',
+                optimizePreset === p.id
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t(p.key)}
+            </button>
+          ))}
+        </div>
       </div>
 
       {mobileFiles.length > 0 && (
@@ -531,7 +579,7 @@ function SendToDesktop({
             const origSize = mobileOptimized[f.id]
             const sizeHint =
               origSize != null
-                ? `${formatBytes(origSize)} → ${formatBytes(f.size)} · optimized`
+                ? `${formatBytes(origSize)} → ${formatBytes(f.size)} · ${t('mob.send.optimized')}`
                 : formatBytes(f.size)
             return (
               <li key={f.id} className="flex items-center gap-3 px-4 py-3">
@@ -553,13 +601,13 @@ function SendToDesktop({
                     {row?.status === 'active'
                       ? `${(row.size > 0 ? (row.transferred / row.size) * 100 : 0).toFixed(0)}% · ${formatSpeed(row.speed)}`
                       : row?.status === 'done'
-                        ? 'Delivered to desktop'
+                        ? t('mob.send.delivered')
                         : row?.status === 'queued'
                           ? origSize != null
-                            ? `Queued… · ${sizeHint}`
-                            : 'Queued…'
+                            ? `${t('mob.send.queued')} · ${sizeHint}`
+                            : t('mob.send.queued')
                           : row?.status === 'error'
-                            ? row.error ?? 'Failed'
+                            ? row.error ?? t('mob.row.failed')
                             : sizeHint}
                   </p>
                 </div>
@@ -582,7 +630,7 @@ function SendToDesktop({
                     className="h-8 w-8 shrink-0 text-muted-foreground"
                     onClick={() => removeMobileFile(f.id)}
                     disabled={row?.status === 'active'}
-                    aria-label={`Stop sending ${f.name}`}
+                    aria-label={t('mob.send.stopAria', { name: f.name })}
                   >
                     <X className="h-4 w-4" />
                   </Button>
@@ -595,7 +643,7 @@ function SendToDesktop({
 
       {active && (
         <p className="tnum border-t border-border/70 px-4 py-2 text-center text-xs text-muted-foreground">
-          Uploading to desktop…
+          {t('mob.send.uploading')}
         </p>
       )}
     </section>
@@ -609,34 +657,36 @@ function SendToDesktop({
 function LostView() {
   const error = useBeamStore((s) => s.error)
   const reconnect = useBeamStore((s) => s.reconnect)
+  const { t } = useLang()
   return (
     <StateShell tone="border-amber-500/30 bg-amber-500/5">
       <span className="flex h-14 w-14 items-center justify-center rounded-full bg-amber-500/15">
         <CloudOff className="h-6 w-6 text-amber-600 dark:text-amber-400" aria-hidden />
       </span>
-      <p className="mt-4 font-semibold">Connection lost</p>
+      <p className="mt-4 font-semibold">{t('mob.lost.title')}</p>
       <p className="mt-1 text-sm text-muted-foreground">
-        {error?.message ?? 'The connection to your desktop dropped.'}
+        {error?.message ?? t('mob.lost.fallback')}
       </p>
       <Button className="mt-5 min-w-40" onClick={reconnect}>
         <RotateCcw className="h-4 w-4" aria-hidden />
-        Reconnect
+        {t('mob.lost.reconnect')}
       </Button>
-      <p className="mt-3 text-xs text-muted-foreground">The QR code on your desktop is still valid.</p>
+      <p className="mt-3 text-xs text-muted-foreground">{t('mob.lost.note')}</p>
     </StateShell>
   )
 }
 
 function ExpiredView() {
   const stats = useBeamStore((s) => s.stats)
+  const { t } = useLang()
   return (
     <StateShell tone="border-amber-500/30 bg-amber-500/5">
       <span className="flex h-14 w-14 items-center justify-center rounded-full bg-amber-500/15">
         <Clock className="h-6 w-6 text-amber-600 dark:text-amber-400" aria-hidden />
       </span>
-      <p className="mt-4 font-semibold">Session expired</p>
+      <p className="mt-4 font-semibold">{t('mob.expired.title')}</p>
       <p className="mt-1 text-sm text-muted-foreground">
-        This pairing session expired after {SESSION_TTL_MINUTES} minutes. Ask the desktop for a fresh QR code.
+        {t('mob.expired.body', { ttl: SESSION_TTL_MINUTES })}
       </p>
       <SessionSummaryLine files={stats.filesTransferred} bytes={stats.totalData} />
       <StartOverLink />
@@ -649,6 +699,7 @@ function InvalidView() {
   const [manual, setManual] = useState('')
   const [scanOpen, setScanOpen] = useState(false)
   const openSession = useBeamStore((s) => s.openSession)
+  const { t } = useLang()
 
   const tryManual = () => {
     const v = manual.trim()
@@ -676,25 +727,25 @@ function InvalidView() {
       <span className="flex h-14 w-14 items-center justify-center rounded-full bg-destructive/10">
         <CloudOff className="h-6 w-6 text-destructive" aria-hidden />
       </span>
-      <p className="mt-4 font-semibold">{error?.title ?? 'Invalid or expired link'}</p>
+      <p className="mt-4 font-semibold">{error?.title ?? t('mob.invalid.titleFallback')}</p>
       <p className="mt-1 text-sm text-muted-foreground">
-        {error?.message ?? 'This QR link is no longer valid. Scan a fresh code from the desktop.'}
+        {error?.message ?? t('mob.invalid.bodyFallback')}
       </p>
       <Button variant="outline" className="mt-5 h-11 w-full" onClick={() => setScanOpen(true)}>
         <ScanLine className="h-4 w-4 text-primary" aria-hidden />
-        Scan a fresh QR code
+        {t('mob.invalid.scanFresh')}
       </Button>
       <div className="mt-3 w-full space-y-2">
         <Input
           value={manual}
           onChange={(e) => setManual(e.target.value)}
-          placeholder="Paste pairing link or CODE-KEY"
-          aria-label="Pairing link or manual code"
+          placeholder={t('mob.invalid.placeholder')}
+          aria-label={t('mob.invalid.inputAria')}
           className="h-11 bg-background text-center"
         />
         <Button className="h-11 w-full" onClick={tryManual}>
           <FilePlus2 className="h-4 w-4" aria-hidden />
-          Try pairing key
+          {t('mob.invalid.tryKey')}
         </Button>
       </div>
       <StartOverLink />
@@ -712,13 +763,14 @@ function InvalidView() {
 
 function EndedView() {
   const stats = useBeamStore((s) => s.stats)
+  const { t } = useLang()
   return (
     <StateShell tone="border-primary/30 bg-primary/5">
       <span className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
         <CheckCircle2 className="h-6 w-6 text-primary" aria-hidden />
       </span>
-      <p className="mt-4 font-semibold">Session ended</p>
-      <p className="mt-1 text-sm text-muted-foreground">The desktop closed this transfer session.</p>
+      <p className="mt-4 font-semibold">{t('mob.ended.title')}</p>
+      <p className="mt-1 text-sm text-muted-foreground">{t('mob.ended.body')}</p>
       <SessionSummaryLine files={stats.filesTransferred} bytes={stats.totalData} />
       <StartOverLink />
     </StateShell>
@@ -728,16 +780,17 @@ function EndedView() {
 function FailedView() {
   const error = useBeamStore((s) => s.error)
   const reconnect = useBeamStore((s) => s.reconnect)
+  const { t } = useLang()
   return (
     <StateShell tone="border-destructive/30 bg-destructive/5">
       <span className="flex h-14 w-14 items-center justify-center rounded-full bg-destructive/10">
         <CloudOff className="h-6 w-6 text-destructive" aria-hidden />
       </span>
-      <p className="mt-4 font-semibold">{error?.title ?? 'Something went wrong'}</p>
-      <p className="mt-1 text-sm text-muted-foreground">{error?.message ?? 'An unexpected error occurred.'}</p>
+      <p className="mt-4 font-semibold">{error?.title ?? t('mob.failed.titleFallback')}</p>
+      <p className="mt-1 text-sm text-muted-foreground">{error?.message ?? t('mob.failed.bodyFallback')}</p>
       <Button className="mt-5 min-w-40" onClick={reconnect}>
         <RotateCcw className="h-4 w-4" aria-hidden />
-        Try again
+        {t('mob.failed.retry')}
       </Button>
       <StartOverLink />
     </StateShell>
@@ -745,24 +798,28 @@ function FailedView() {
 }
 
 function StartOverLink() {
+  const { t } = useLang()
   return (
     <button
       type="button"
       onClick={() => window.location.assign('/')}
       className="mt-5 text-sm font-medium text-primary underline-offset-4 hover:underline"
     >
-      Go to Beam home
+      {t('mob.startOver')}
     </button>
   )
 }
 
 /** Compact "what happened this session" chip for terminal states. */
 function SessionSummaryLine({ files, bytes }: { files: number; bytes: number }) {
+  const { t } = useLang()
   if (files <= 0) return null
   return (
     <p className="tnum mt-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1 text-xs font-medium shadow-sm">
       <Files className="h-3.5 w-3.5 text-primary" aria-hidden />
-      {files} file{files === 1 ? '' : 's'} · {formatBytes(bytes)} moved
+      {files === 1
+        ? t('mob.summary.one', { n: files, bytes: formatBytes(bytes) })
+        : t('mob.summary.many', { n: files, bytes: formatBytes(bytes) })}
     </p>
   )
 }

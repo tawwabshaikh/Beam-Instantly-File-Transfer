@@ -85,7 +85,7 @@ export function QrCard({ variant }: { variant: 'full' | 'compact' }) {
                 remaining={remaining}
                 expiresSoon={expiresSoon}
                 joined
-                ttlMinutes={ttlMinutes}
+                ttlMs={session?.sessionTtlMs ?? ttlMinutes * 60_000}
               />
             </DialogContent>
           </Dialog>
@@ -136,7 +136,7 @@ export function QrCard({ variant }: { variant: 'full' | 'compact' }) {
           remaining={remaining}
           expiresSoon={expiresSoon}
           joined={false}
-          ttlMinutes={ttlMinutes}
+          ttlMs={session?.sessionTtlMs ?? ttlMinutes * 60_000}
         />
       ) : (
         <div className="flex min-h-[320px] items-center justify-center">
@@ -178,6 +178,33 @@ export function QrCard({ variant }: { variant: 'full' | 'compact' }) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Countdown ring — tiny circular drain showing session time left      */
+/* ------------------------------------------------------------------ */
+
+function CountdownRing({ remaining, totalMs, expiring }: { remaining: number; totalMs: number; expiring: boolean }) {
+  const R = 15.5
+  const C = 2 * Math.PI * R
+  const ratio = totalMs > 0 ? Math.min(1, Math.max(0, remaining / totalMs)) : 0
+  return (
+    <svg viewBox="0 0 36 36" className="h-7 w-7 -rotate-90" aria-hidden focusable="false">
+      <circle cx="18" cy="18" r={R} fill="none" strokeWidth="3.5" className="stroke-border" />
+      <circle
+        cx="18"
+        cy="18"
+        r={R}
+        fill="none"
+        strokeWidth="3.5"
+        strokeLinecap="round"
+        className={expiring ? 'stroke-amber-500' : 'stroke-primary'}
+        strokeDasharray={C}
+        strokeDashoffset={C * (1 - ratio)}
+        style={{ transition: 'stroke-dashoffset 1s linear, stroke 0.4s ease' }}
+      />
+    </svg>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /* QR panel shared between full card and modal                        */
 /* ------------------------------------------------------------------ */
 
@@ -188,7 +215,7 @@ function QrPanel({
   remaining,
   expiresSoon,
   joined,
-  ttlMinutes,
+  ttlMs,
 }: {
   qr: string | null
   joinUrl: string
@@ -196,7 +223,7 @@ function QrPanel({
   remaining: number
   expiresSoon: boolean
   joined: boolean
-  ttlMinutes: number
+  ttlMs: number
 }) {
   const [copied, setCopied] = useState<'link' | 'code' | null>(null)
   const [manualValue, setManualValue] = useState('')
@@ -250,12 +277,15 @@ function QrPanel({
       </div>
 
       <h3 className="mt-4 text-base font-semibold">Scan with your phone</h3>
-      <p className={cn('tnum mt-1 text-sm', expiresSoon ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-muted-foreground')}>
-        Session expires in {formatCountdown(remaining)}
-      </p>
+      <div className="mt-1 flex items-center gap-2">
+        <CountdownRing remaining={remaining} totalMs={ttlMs} expiring={expiresSoon} />
+        <p className={cn('tnum text-sm', expiresSoon ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-muted-foreground')}>
+          Session expires in {formatCountdown(remaining)}
+        </p>
+      </div>
       {!joined && (
         <span className="tnum mt-1.5 rounded-full border border-border bg-muted/60 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground">
-          Link valid for {ttlMinutes} min
+          Link valid for {Math.max(1, Math.round(ttlMs / 60_000))} min
         </span>
       )}
 

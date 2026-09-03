@@ -23,17 +23,36 @@ export interface CompressedItem {
   compressed: boolean
 }
 
-export const COMPRESSION_PRESET: Required<CompressOptions> = {
+/** User-selectable optimization strength (phone upload card). */
+export type OptimizePreset = 'original' | 'balanced' | 'compact'
+
+/** Balanced — big savings, visually indistinguishable (default). */
+export const BALANCED_PRESET: Required<CompressOptions> = {
   maxDim: 2016,
   quality: 0.85,
   minBytes: 150 * 1024,
 }
 
+/** Compact — smallest size for sharing / slow networks. */
+export const COMPACT_PRESET: Required<CompressOptions> = {
+  maxDim: 1280,
+  quality: 0.72,
+  minBytes: 120 * 1024,
+}
+
+/** Options for a preset ('original' never reaches the compressor). */
+export function presetOptions(preset: OptimizePreset): Required<CompressOptions> {
+  return preset === 'compact' ? COMPACT_PRESET : BALANCED_PRESET
+}
+
+/** Back-compat alias used as the compressor's default options. */
+export const COMPRESSION_PRESET = BALANCED_PRESET
+
 /** Extensions rewritten to .jpg when we re-encode as JPEG. */
 const REENCODABLE_EXT = /\.(png|webp|bmp|tiff?|heic|heif|avif)$/i
 
-export function isCompressibleImage(file: File): boolean {
-  const preset = COMPRESSION_PRESET
+export function isCompressibleImage(file: File, options: CompressOptions = {}): boolean {
+  const preset = { ...COMPRESSION_PRESET, ...options }
   return (
     file.type.startsWith('image/') &&
     file.type !== 'image/gif' && // animation would be destroyed
@@ -89,7 +108,7 @@ async function loadBitmap(file: File): Promise<LoadedBitmap> {
 export async function compressImage(file: File, options: CompressOptions = {}): Promise<CompressedItem> {
   const preset = { ...COMPRESSION_PRESET, ...options }
   const passthrough: CompressedItem = { file, originalSize: file.size, size: file.size, compressed: false }
-  if (!isCompressibleImage(file)) return passthrough
+  if (!isCompressibleImage(file, options)) return passthrough
 
   let bitmap: LoadedBitmap | null = null
   try {

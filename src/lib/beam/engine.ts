@@ -19,7 +19,7 @@ import {
   waitUntilOpen,
 } from './webrtc'
 import { genId, isBlockedType, makePreviewUrl, validateFiles } from './files'
-import { compressImages, isCompressibleImage } from './compress'
+import { compressImages, isCompressibleImage, presetOptions, type OptimizePreset } from './compress'
 import { formatBytes } from './format'
 import { getDeviceInfo, describeDevice } from './device'
 import { recordHistory } from './history'
@@ -85,6 +85,8 @@ export interface BeamSession {
   token: string
   expiresAt: number
   joinUrl: string
+  /** Full session length in ms at (re)start — drives countdown rings. */
+  sessionTtlMs: number
 }
 
 /** A short text note exchanged with the paired device. */
@@ -117,6 +119,8 @@ export interface BeamState {
   saveFolder: string | null
   /** When on, big images added on the phone are downscaled/re-encoded before sending. */
   optimizeUploads: boolean
+  /** Selected optimization strength: 'original' disables compression entirely. */
+  optimizePreset: OptimizePreset
   /** mobileFile id → original byte size, recorded when optimization shrank it. */
   mobileOptimized: Record<string, number>
 }
@@ -136,6 +140,7 @@ interface BeamActions {
   addMobileFiles(files: FileList | File[]): void
   removeMobileFile(id: string): void
   setOptimizeUploads(value: boolean): void
+  setOptimizePreset(preset: OptimizePreset): void
   saveReceived(id: string): void
   shareReceived(id: string): Promise<void>
   dismissReceived(id: string): void
@@ -182,18 +187,26 @@ const canceledIds = new Set<string>()
 
 const OPTIMIZE_KEY = 'beam.optimize.v1'
 
-function readOptimizePref(): boolean {
-  if (typeof window === 'undefined') return false
+function normalizePreset(value: string | null): OptimizePreset | null {
+  if (value === '1' || value === 'balanced') return 'balanced' // legacy boolean pref migrates
+  if (value === '0' || value === 'original') return 'original'
+  if (value === 'compact') return 'compact'
+  return null
+}
+
+function readOptimizePref(): { uploads: boolean; preset: OptimizePreset } {
+  if (typeof window === 'undefined') return { uploads: false, preset: 'original' }
   try {
-    return window.localStorage.getItem(OPTIMIZE_KEY) === '1'
+    const preset = normalizePreset(window.localStorage.getItem(OPTIMIZE_KEY)) ?? 'original'
+    return { uploads: preset !== 'original', preset }
   } catch {
-    return false
+    return { uploads: false, preset: 'original' }
   }
 }
 
-function writeOptimizePref(value: boolean) {
+function writeOptimizePreset(preset: OptimizePreset) {
   try {
-    window.localStorage.setItem(OPTIMIZE_KEY, value ? '1' : '0')
+    window.localStorage.setItem(OPTIMIZE_KEY, preset)
   } catch {
     // non-fatal
   }
@@ -817,7 +830,19 @@ function ensureSocket(): Socket {
     if (!data?.ok || !st.session || data.role !== st.role) return
     joiningCode = null
     joinSentFor = null
-    useBeamStore.setState({ manifest: data.session.fileManifest ?? [] })
+    useBeamStore.setState({
+      manifest: data.session.fileManifest ?? [],
+      // Guests learn the real expiry here (REST open only knows status) — powers the phone countdown.
+      ...(typeof data.session.expiresAt === 'number' && data.session.expiresAt > 0 && st.session
+        ? {
+            session: {
+              ...st.session,
+              expiresAt: data.session.expiresAt,
+              sessionTtlMs: Math.max(st.session.sessionTtlMs, Math.max(0, data.session.expiresAt - Date.now())),
+            },
+          }
+        : {}),
+    })
 
     if (st.role === 'host') {
       if (st.phase !== 'connected') useBeamStore.setState({ phase: 'waiting' })
@@ -1087,7 +1112,13 @@ function ensureSocket(): Socket {
   socket.on('beam:extended', (data: { expiresAt: number }) => {
     const st = useBeamStore.getState()
     if (!st.session || typeof data?.expiresAt !== 'number' || !Number.isFinite(data.expiresAt)) return
-    useBeamStore.setState({ session: { ...st.session, expiresAt: data.expiresAt } })
+    useBeamStore.setState({
+      session: {
+        ...st.session,
+        expiresAt: data.expiresAt,
+        sessionTtlMs: Math.max(st.session.sessionTtlMs, Math.max(0, data.expiresAt - Date.now())),
+      },
+    })
     notify('success', 'Session extended', 'Fresh countdown — keep everything open to stay paired.')
   })
 
@@ -1150,12 +1181,16 @@ const initialState: BeamState = {
   connectedAt: null,
   stats: { filesTransferred: 0, totalData: 0 },
   optimizeUploads: false,
+  optimizePreset: 'original' as OptimizePreset,
   mobileOptimized: {},
 }
 
 export const useBeamStore = create<BeamStore>()((set, get) => ({
   ...initialState,
-  optimizeUploads: readOptimizePref(),
+  ...(() => {
+    const pref = readOptimizePref()
+    return { optimizeUploads: pref.uploads, optimizePreset: pref.preset }
+  })(),
 
   /* ---------------- desktop: file selection ---------------- */
 
@@ -1246,7 +1281,13 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
           ? `${window.location.origin}/?s=${encodeURIComponent(res.code)}&t=${encodeURIComponent(res.token)}`
           : ''
       set({
-        session: { code: res.code, token: res.token, expiresAt: res.expiresAt, joinUrl },
+        session: {
+          code: res.code,
+          token: res.token,
+          expiresAt: res.expiresAt,
+          joinUrl,
+          sessionTtlMs: Math.max(0, res.expiresAt - Date.now()),
+        },
         role: 'host',
       })
       ensureSocket()
@@ -1272,7 +1313,7 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
   },
 
   resetAll() {
-    const keepOptimize = get().optimizeUploads
+    const keepPreset = get().optimizePreset
     destroyPeer()
     socket?.disconnect()
     socket = null
@@ -1286,7 +1327,11 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
     samples.clear()
     lastSpeed.clear()
     get().selectedFiles.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl))
-    set({ ...initialState, optimizeUploads: keepOptimize })
+    set({
+      ...initialState,
+      optimizePreset: keepPreset,
+      optimizeUploads: keepPreset !== 'original',
+    })
   },
 
   /* ---------------- phone: session open ---------------- */
@@ -1298,10 +1343,11 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
 
     set({
       ...initialState,
-      optimizeUploads: get().optimizeUploads,
+      optimizePreset: get().optimizePreset,
+      optimizeUploads: get().optimizePreset !== 'original',
       role: 'guest',
       phase: 'opening',
-      session: { code, token, expiresAt: 0, joinUrl: '' },
+      session: { code, token, expiresAt: 0, joinUrl: '', sessionTtlMs: 0 },
     })
     joiningCode = code
 
@@ -1400,8 +1446,9 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
 
     // Photo optimization: downscale + re-encode big images before they queue.
     // Non-image selections keep the original synchronous path (zero added latency).
-    if (get().optimizeUploads && accepted.some((f) => isCompressibleImage(f))) {
-      void compressImages(accepted)
+    const preset = get().optimizePreset
+    if (preset !== 'original' && accepted.some((f) => isCompressibleImage(f, presetOptions(preset)))) {
+      void compressImages(accepted, presetOptions(preset))
         .then((items) => {
           const optimized: Record<string, number> = {}
           let from = 0
@@ -1459,8 +1506,14 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
   },
 
   setOptimizeUploads(value: boolean) {
-    writeOptimizePref(value)
-    set({ optimizeUploads: value })
+    const preset: OptimizePreset = value ? 'balanced' : 'original'
+    writeOptimizePreset(preset)
+    set({ optimizeUploads: preset !== 'original', optimizePreset: preset })
+  },
+
+  setOptimizePreset(preset: OptimizePreset) {
+    writeOptimizePreset(preset)
+    set({ optimizeUploads: preset !== 'original', optimizePreset: preset })
   },
 
   /* ---------------- shared ---------------- */
@@ -1602,6 +1655,6 @@ if (typeof window !== 'undefined') {
     store: useBeamStore, // QA only: full zustand API (setState, subscribe, …)
     debug: beamDebug,
     storeId: Math.random().toString(36).slice(2, 8),
-    version: 8,
+    version: 9,
   }
 }

@@ -83,9 +83,9 @@ for i in $(seq 1 16); do
 done
 echo "== phone phase: $PH"
 
-# --- optimize row visible on the phone upload card ---
-OPT=$(ab eval "(() => { const l = document.getElementById('beam-optimize'); return l ? 'toggle-ok' : 'MISSING' })()")
-echo "== optimize toggle: $OPT"
+# --- optimize control visible on the phone upload card (round-10 segmented control) ---
+OPT=$(ab eval "(() => { const g = document.querySelector('[role=\"radiogroup\"]'); return g ? 'preset-control-ok(' + document.querySelectorAll('[role=\"radio\"]').length + ')' : 'MISSING' })()")
+echo "== optimize control: $OPT"
 ab screenshot .qa/shots/qa9-optimize-row.png > /dev/null
 
 # --- (a) optimize OFF: big PNG passes through untouched ---
@@ -109,11 +109,11 @@ ab wait 800
 PASSTHRU=$(ab eval "(() => { const s = window.__beam.getState(); const f = s.mobileFiles[0]; return JSON.stringify({ name: f.name, size: f.size, orig: f.file.size, optimizedMarked: !!s.mobileOptimized[f.id] }) })()")
 echo "== passthrough: $PASSTHRU"
 
-# --- (b) optimize ON: toggle via store + persistence assert, then add second PNG ---
+# --- (b) optimize ON: preset control -> balanced (via legacy boolean setter) ---
 ab eval "window.__beam.store.getState().setOptimizeUploads(true); 'on'"
 ab wait 300
 STORED=$(ab eval "localStorage.getItem('beam.optimize.v1')")
-echo "== pref persisted: $STORED (expect 1)"
+echo "== pref persisted: $STORED (expect balanced)"
 ab eval "
 (async () => {
   const c = document.createElement('canvas'); c.width = 2400; c.height = 1600;
