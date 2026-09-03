@@ -103,6 +103,7 @@ export interface BeamState {
 interface BeamActions {
   addFiles(files: FileList | File[]): void
   removeSelectedFile(id: string): void
+  reorderSelectedFiles(fromId: string, toId: string): void
   createNewSession(): Promise<void>
   endSession(): Promise<void>
   resetAll(): void
@@ -190,6 +191,16 @@ function upsertRow(id: string, row: TransferRow): void {
   useBeamStore.setState((state) => ({
     transfers: { ...state.transfers, [id]: { ...state.transfers[id], ...row } },
   }))
+}
+
+/** Host re-publishes the download manifest (order included) to the peer. */
+function publishManifestIfHost(): void {
+  const st = useBeamStore.getState()
+  if (st.session && st.role === 'host' && ['waiting', 'connecting', 'connected'].includes(st.phase)) {
+    emitCode('beam:manifest', {
+      files: st.selectedFiles.map((f) => ({ id: f.id, name: f.name, size: f.size, type: f.type })),
+    })
+  }
 }
 
 function noteProgress(id: string, transferred: number, size: number): void {
@@ -446,12 +457,29 @@ function finishSend(transferId: string, file: File, meta: FileMeta): void {
   notify('success', 'Transfer completed', file.name)
 }
 
+/**
+ * WebRTC SCTP chunk size. 64 KB when BOTH ends are Chromium-based (their SCTP
+ * stack handles it fine and throughput roughly doubles); anything else falls
+ * back to the conservative 16 KB cross-browser default. Receiver appends
+ * chunks in arrival order (seq is informational), so no negotiation handshake
+ * is needed — the sender's choice is self-contained.
+ */
+const CHROMIUM_BROWSERS = new Set(['Chrome', 'Edge', 'Opera', 'Samsung Internet', 'Chromium'])
+function getWebrtcChunkSize(): number {
+  const peerBrowser = useBeamStore.getState().peerDevice?.browser
+  if (!peerBrowser) return LIMITS.CHUNK_SIZE_WEBRTC
+  const mine = getDeviceInfo().browser
+  return CHROMIUM_BROWSERS.has(peerBrowser) && CHROMIUM_BROWSERS.has(mine)
+    ? 64 * 1024
+    : LIMITS.CHUNK_SIZE_WEBRTC
+}
+
 async function sendOverDC(transferId: string, file: File, meta: FileMeta): Promise<void> {
   const dc = getOutboundChannel()
   if (!dc || dc.readyState !== 'open') throw new Error('Direct channel not open')
   dc.send(JSON.stringify({ kind: 'start', transferId, file: meta }))
 
-  const CHUNK = LIMITS.CHUNK_SIZE_WEBRTC
+  const CHUNK = getWebrtcChunkSize()
   let offset = 0
   while (offset < file.size) {
     if (dc.readyState !== 'open') throw new Error('Connection lost during transfer')
@@ -1029,10 +1057,8 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
     const st = get()
     if (!st.session && st.phase !== 'creating') {
       void get().createNewSession()
-    } else if (st.session && st.role === 'host' && ['waiting', 'connecting', 'connected'].includes(st.phase)) {
-      emitCode('beam:manifest', {
-        files: get().selectedFiles.map((f) => ({ id: f.id, name: f.name, size: f.size, type: f.type })),
-      })
+    } else {
+      publishManifestIfHost()
     }
   },
 
@@ -1049,12 +1075,18 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
       }
     })
     set((s) => ({ selectedFiles: s.selectedFiles.filter((f) => f.id !== id) }))
-    const st = get()
-    if (st.session && st.role === 'host' && ['waiting', 'connecting', 'connected'].includes(st.phase)) {
-      emitCode('beam:manifest', {
-        files: get().selectedFiles.map((f) => ({ id: f.id, name: f.name, size: f.size, type: f.type })),
-      })
-    }
+    publishManifestIfHost()
+  },
+
+  reorderSelectedFiles(fromId: string, toId: string) {
+    const files = [...get().selectedFiles]
+    const from = files.findIndex((f) => f.id === fromId)
+    const to = files.findIndex((f) => f.id === toId)
+    if (from === -1 || to === -1 || from === to) return
+    const [moved] = files.splice(from, 1)
+    files.splice(to, 0, moved)
+    set({ selectedFiles: files })
+    publishManifestIfHost()
   },
 
   /* ---------------- desktop: session lifecycle ---------------- */

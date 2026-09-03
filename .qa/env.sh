@@ -1,0 +1,2 @@
+JOIN=http://localhost:81/?s=4A5HS8&t=5WD6QSKPQUH2
+CODE="4A5HS8"

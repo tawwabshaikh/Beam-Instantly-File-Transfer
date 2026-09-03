@@ -20,7 +20,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { useBeamStore, type TransferRow } from '@/lib/beam/engine'
-import { formatBytes, formatDuration, formatSpeed } from '@/lib/beam/format'
+import { formatBytes, formatDuration, formatRelativeTime, formatSpeed } from '@/lib/beam/format'
 import { describeDevice } from '@/lib/beam/device'
 import { FileTypeIcon } from '@/components/beam/desktop/dropzone'
 import { SpeedSparkline } from '@/components/beam/speed-sparkline'
@@ -100,7 +100,7 @@ function StatCard({
   value: string
 }) {
   return (
-    <div className="rounded-xl border border-border/70 bg-background/50 p-3">
+    <div className="rounded-xl border border-border/70 bg-background/50 p-3 transition-colors duration-200 hover:border-primary/30 hover:bg-primary/5">
       <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <Icon className="h-3.5 w-3.5" aria-hidden />
         {label}
@@ -282,7 +282,7 @@ export function ReceivedFiles() {
       </header>
       <ul className="beam-scroll max-h-72 divide-y divide-primary/10 overflow-y-auto">
         {received.map((file) => (
-          <li key={file.id} className="flex items-center gap-3 px-4 py-3">
+          <li key={file.id} className="animate-row-in flex items-center gap-3 px-4 py-3 transition-colors hover:bg-primary/5">
             {file.type.startsWith('image/') ? (
               <img
                 src={file.url}
@@ -298,7 +298,9 @@ export function ReceivedFiles() {
               <p className="truncate text-sm font-medium" title={file.name}>
                 {file.name}
               </p>
-              <p className="tnum text-xs text-muted-foreground">{formatBytes(file.size)} · received</p>
+              <p className="tnum text-xs text-muted-foreground">
+                {formatBytes(file.size)} · {formatRelativeTime(file.receivedAt)}
+              </p>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               {file.type.startsWith('image/') && (

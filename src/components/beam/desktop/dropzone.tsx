@@ -12,7 +12,21 @@ import {
   Paperclip,
   UploadCloud,
   X,
+  GripVertical,
 } from 'lucide-react'
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+  type Modifier,
+} from '@dnd-kit/core'
+import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useBeamStore, type SelectedFile } from '@/lib/beam/engine'
@@ -162,14 +176,36 @@ export function DropzoneCard() {
 export function FilesCard({ compact = false }: { compact?: boolean }) {
   const files = useBeamStore((s) => s.selectedFiles)
   const removeFile = useBeamStore((s) => s.removeSelectedFile)
+  const reorderFiles = useBeamStore((s) => s.reorderSelectedFiles)
   const phase = useBeamStore((s) => s.phase)
   const [dragging, setDragging] = useState(false)
+  const [dragActiveId, setDragActiveId] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const dragDepth = useRef(0)
   const addFiles = useBeamStore((s) => s.addFiles)
 
   const total = files.reduce((a, f) => a + f.size, 0)
   const locked = phase === 'connected' || phase === 'connecting'
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+
+  const verticalOnly: Modifier = ({ transform }) => ({ ...transform, x: 0 })
+
+  const onDragStart = useCallback((e: DragStartEvent) => {
+    setDragActiveId(String(e.active.id))
+  }, [])
+
+  const onDragEnd = useCallback(
+    (e: DragEndEvent) => {
+      setDragActiveId(null)
+      const { active, over } = e
+      if (over && active.id !== over.id) reorderFiles(String(active.id), String(over.id))
+    },
+    [reorderFiles],
+  )
 
   if (files.length === 0) return null
 
@@ -202,7 +238,10 @@ export function FilesCard({ compact = false }: { compact?: boolean }) {
           <h2 className="text-sm font-semibold">
             {files.length} {files.length === 1 ? 'file' : 'files'} ready
           </h2>
-          <p className="tnum text-xs text-muted-foreground">{formatBytes(total)} total</p>
+          <p className="tnum text-xs text-muted-foreground">
+            {formatBytes(total)} total
+            {!locked && files.length > 1 && ' · drag to reorder'}
+          </p>
         </div>
         <Button
           variant="outline"
@@ -228,11 +267,28 @@ export function FilesCard({ compact = false }: { compact?: boolean }) {
         />
       </header>
       <ScrollArea className={cn('beam-scroll', files.length > 4 ? 'h-64' : 'max-h-64')} type="always">
-        <ul className="divide-y divide-border/60 px-2 py-1">
-          {files.map((f) => (
-            <FileRow key={f.id} file={f} onRemove={() => removeFile(f.id)} disabled={locked} />
-          ))}
-        </ul>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={onDragStart}
+          onDragEnd={onDragEnd}
+          modifiers={[verticalOnly]}
+        >
+          <SortableContext items={files.map((f) => f.id)} strategy={verticalListSortingStrategy} disabled={locked}>
+            <ul className="divide-y divide-border/60 px-2 py-1">
+              {files.map((f, i) => (
+                <SortableFileRow
+                  key={f.id}
+                  file={f}
+                  index={i + 1}
+                  onRemove={() => removeFile(f.id)}
+                  disabled={locked}
+                  dragging={dragActiveId === f.id}
+                />
+              ))}
+            </ul>
+          </SortableContext>
+        </DndContext>
       </ScrollArea>
       {locked && (
         <p className="border-t border-border/70 px-4 py-2 text-xs text-muted-foreground">
@@ -244,17 +300,51 @@ export function FilesCard({ compact = false }: { compact?: boolean }) {
   )
 }
 
-function FileRow({
+function SortableFileRow({
   file,
+  index,
   onRemove,
   disabled,
+  dragging,
 }: {
   file: SelectedFile
+  index: number
   onRemove: () => void
   disabled?: boolean
+  dragging: boolean
 }) {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isSorting } = useSortable({
+    id: file.id,
+    disabled,
+  })
+
   return (
-    <li className="flex items-center gap-3 px-2 py-2.5">
+    <li
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={cn(
+        'relative flex items-center gap-1.5 rounded-xl px-2 py-2.5 transition-colors',
+        dragging && 'z-10 bg-card shadow-lg shadow-black/10 ring-1 ring-primary/40',
+        isSorting && !dragging && 'bg-accent/40',
+      )}
+      aria-label={`Position ${index}: ${file.name}`}
+    >
+      {!disabled && (
+        <button
+          ref={setActivatorNodeRef}
+          type="button"
+          {...attributes}
+          {...listeners}
+          className="flex h-8 w-6 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground active:cursor-grabbing"
+          aria-label={`Reorder ${file.name}. Press space and arrow keys to move.`}
+          tabIndex={0}
+        >
+          <GripVertical className="h-4 w-4" aria-hidden />
+        </button>
+      )}
+      <span className="tnum hidden w-5 shrink-0 text-center text-[11px] font-medium text-muted-foreground/70 sm:block">
+        {index}
+      </span>
       {file.previewUrl ? (
         <img
           src={file.previewUrl}

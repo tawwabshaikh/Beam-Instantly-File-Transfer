@@ -59,6 +59,40 @@ export function clearHistory(): void {
   }
 }
 
+/* CSV export (RFC 4180 quoting, BOM for Excel friendliness) */
+
+function csvEscape(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`
+}
+
+export function historyToCsv(entries: HistoryEntry[]): string {
+  const head = ['date', 'file', 'size_bytes', 'direction', 'status', 'session']
+  const rows = entries.map((e) =>
+    [
+      new Date(e.createdAt).toISOString(),
+      csvEscape(e.name),
+      String(e.size),
+      e.direction,
+      e.status,
+      e.sessionCode,
+    ].join(','),
+  )
+  return '\uFEFF' + [head.join(','), ...rows].join('\r\n')
+}
+
+export function downloadHistoryCsv(entries: HistoryEntry[]): void {
+  if (typeof window === 'undefined' || entries.length === 0) return
+  const blob = new Blob([historyToCsv(entries)], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `beam-transfer-history-${new Date().toISOString().slice(0, 10)}.csv`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 function genId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`

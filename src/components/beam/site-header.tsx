@@ -4,6 +4,7 @@ import { useTheme } from 'next-themes'
 import { Moon, Sun, Volume2, VolumeX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Logo } from '@/components/beam/logo'
+import { InstallPwaButton } from '@/components/beam/install-pwa-button'
 import { useSoundMuted } from '@/hooks/use-sound-muted'
 import { cn } from '@/lib/utils'
 
@@ -55,6 +56,7 @@ export function SiteHeader({
             </button>
           ))}
           <span className="mx-1 hidden h-5 w-px bg-border sm:block" aria-hidden />
+          <InstallPwaButton />
           <Button
             variant="ghost"
             size="icon"

@@ -1,11 +1,11 @@
 'use client'
 
 import { useSyncExternalStore } from 'react'
-import { ArrowDownLeft, ArrowUpRight, CheckCircle2, CircleAlert, Inbox, Trash2 } from 'lucide-react'
+import { ArrowDownLeft, ArrowUpRight, CheckCircle2, CircleAlert, Download, Inbox, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { clearHistory, loadHistory, type HistoryEntry } from '@/lib/beam/history'
+import { clearHistory, downloadHistoryCsv, loadHistory, type HistoryEntry } from '@/lib/beam/history'
 import { formatBytes, formatRelativeTime } from '@/lib/beam/format'
 import { FileTypeIcon } from '@/components/beam/desktop/dropzone'
 
@@ -46,6 +46,9 @@ function subscribeHistory(onChange: () => void): () => void {
 export function HistoryView() {
   const entries = useSyncExternalStore(subscribeHistory, getHistorySnapshot, getServerSnapshot)
 
+  const completed = entries.filter((e) => e.status === 'completed').length
+  const totalBytes = entries.reduce((a, e) => a + e.size, 0)
+
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 sm:py-14">
       <header className="flex flex-wrap items-end justify-between gap-3">
@@ -56,17 +59,57 @@ export function HistoryView() {
           </p>
         </div>
         {entries.length > 0 && (
-          <Button variant="outline" size="sm" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => clearHistory()}>
-            <Trash2 className="h-4 w-4" aria-hidden />
-            Clear history
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => downloadHistoryCsv(entries)}
+              aria-label={`Export ${entries.length} history entries as CSV`}
+            >
+              <Download className="h-4 w-4" aria-hidden />
+              Export CSV
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={() => clearHistory()}
+            >
+              <Trash2 className="h-4 w-4" aria-hidden />
+              Clear history
+            </Button>
+          </div>
         )}
       </header>
+
+      {entries.length > 0 && (
+        <dl className="mt-5 grid grid-cols-3 gap-3">
+          <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
+            <dt className="text-xs font-medium text-muted-foreground">Transfers</dt>
+            <dd className="tnum mt-0.5 text-lg font-semibold">
+              {completed}
+              {completed !== entries.length && (
+                <span className="text-sm font-normal text-muted-foreground"> / {entries.length}</span>
+              )}
+            </dd>
+          </div>
+          <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
+            <dt className="text-xs font-medium text-muted-foreground">Data moved</dt>
+            <dd className="tnum mt-0.5 text-lg font-semibold">{formatBytes(totalBytes)}</dd>
+          </div>
+          <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
+            <dt className="text-xs font-medium text-muted-foreground">Success rate</dt>
+            <dd className="tnum mt-0.5 text-lg font-semibold">
+              {entries.length === 0 ? '—' : `${Math.round((completed / entries.length) * 100)}%`}
+            </dd>
+          </div>
+        </dl>
+      )}
 
       {entries.length === 0 ? (
         <EmptyHistory />
       ) : (
-        <ScrollArea className="mt-6 max-h-[60vh] beam-scroll pr-3" type="always">
+        <ScrollArea className="beam-scroll mt-6 max-h-[55vh] pr-3" type="always">
           <ul className="space-y-2.5">
             {entries.map((entry) => (
               <li

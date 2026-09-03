@@ -5,6 +5,7 @@ import {
   FileUp,
   Globe2,
   Lock,
+  MoveRight,
   Package,
   QrCode,
   ScanLine,
@@ -99,11 +100,21 @@ function HowItWorks() {
         From file pick-up to transfer in under ten seconds.
       </p>
       <ol className="mt-10 grid gap-4 sm:grid-cols-3 sm:gap-6">
-        {STEPS.map((s) => (
+        {STEPS.map((s, i) => (
           <li
             key={s.step}
-            className="group relative rounded-2xl border border-border bg-card p-6 shadow-sm transition-shadow hover:shadow-md"
+            className="group relative rounded-2xl border border-border bg-card p-6 shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md"
           >
+            {i < STEPS.length - 1 && (
+              <span
+                aria-hidden
+                className="absolute top-1/2 -right-6 z-10 hidden -translate-y-1/2 sm:block"
+              >
+                <span className="flex h-6 w-6 items-center justify-center rounded-full border border-border bg-background shadow-sm">
+                  <MoveRight className="h-3.5 w-3.5 text-muted-foreground/60" />
+                </span>
+              </span>
+            )}
             <div className="flex items-center justify-between">
               <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary transition-colors group-hover:bg-primary group-hover:text-primary-foreground">
                 <s.icon className="h-5 w-5" aria-hidden />
@@ -164,9 +175,9 @@ function Features() {
         {FEATURES.map((f) => (
           <div
             key={f.title}
-            className="rounded-2xl border border-border bg-card p-5 shadow-sm transition-shadow hover:shadow-md"
+            className="group rounded-2xl border border-border bg-card p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md"
           >
-            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary transition-transform duration-200 group-hover:scale-105">
               <f.icon className="h-4.5 w-4.5" aria-hidden />
             </span>
             <h3 className="mt-3 font-medium">{f.title}</h3>

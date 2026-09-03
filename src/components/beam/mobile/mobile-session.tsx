@@ -356,7 +356,7 @@ function MobileFileRow({ fileId, flash = false }: { fileId: string; flash?: bool
   const done = rows.some((r) => r.status === 'done')
 
   return (
-    <li className={cn('flex items-center gap-3 px-4 py-3 transition-colors', flash && 'animate-flash')}>
+    <li className={cn('flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/40', flash && 'animate-flash')}>
       <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
         <FileTypeIcon type={file.type} name={file.name} className="h-4.5 w-4.5" />
       </span>
