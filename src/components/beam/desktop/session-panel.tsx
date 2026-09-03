@@ -24,8 +24,8 @@ import { Progress } from '@/components/ui/progress'
 import { useBeamStore, type ReceivedFile, type TransferRow } from '@/lib/beam/engine'
 import { formatBytes, formatDuration, formatRelativeTime, formatSpeed } from '@/lib/beam/format'
 import { describeDevice } from '@/lib/beam/device'
-import { EXTEND_WINDOW_MS } from '@/lib/beam/protocol'
-import { SESSION_TTL_MINUTES } from '@/lib/beam/config'
+import { extendWindowFor } from '@/lib/beam/protocol'
+import { supportsSaveToFolder } from '@/lib/beam/save-target'
 import { FileTypeIcon } from '@/components/beam/desktop/dropzone'
 import { SpeedSparkline } from '@/components/beam/speed-sparkline'
 import { useCountdown } from '@/hooks/use-countdown'
@@ -122,13 +122,19 @@ function StatCard({
 
 /**
  * Host-only: resets the session countdown back to a full TTL.
- * The service accepts extends only within the last EXTEND_WINDOW_MS,
+ * The service accepts extends only within a scaled extend window,
  * so the control is hidden/disabled outside that window.
  */
 export function ExtendButton({ expiresAt, className }: { expiresAt: number; className?: string }) {
   const remaining = useCountdown(expiresAt)
   const extendSession = useBeamStore((s) => s.extendSession)
-  const canExtend = expiresAt > 0 && remaining > 0 && remaining <= EXTEND_WINDOW_MS
+  const ttlMinutes = useBeamStore((s) => s.ttlMinutes)
+  const windowMs = extendWindowFor(ttlMinutes * 60_000)
+  const canExtend = expiresAt > 0 && remaining > 0 && remaining <= windowMs
+  const windowHint =
+    windowMs >= 60_000
+      ? `the last ${Math.round(windowMs / 60_000)} minute${windowMs >= 120_000 ? 's' : ''}`
+      : `the last ${Math.max(5, Math.round(windowMs / 1000))} seconds`
 
   if (!expiresAt) return null
   return (
@@ -138,10 +144,10 @@ export function ExtendButton({ expiresAt, className }: { expiresAt: number; clas
       className={cn('h-8', className)}
       onClick={extendSession}
       disabled={!canExtend}
-      title={canExtend ? `Reset the session countdown to a fresh ${SESSION_TTL_MINUTES} minutes` : 'Available during the last 5 minutes'}
+      title={canExtend ? `Reset the session countdown to a fresh ${ttlMinutes} minutes` : `Available during ${windowHint}`}
     >
       <Timer className="h-4 w-4 text-primary" aria-hidden />
-      Extend +{SESSION_TTL_MINUTES} min
+      Extend +{ttlMinutes} min
     </Button>
   )
 }
@@ -304,18 +310,53 @@ export function ReceivedFiles() {
   const received = useBeamStore((s) => s.received)
   const saveReceived = useBeamStore((s) => s.saveReceived)
   const dismissReceived = useBeamStore((s) => s.dismissReceived)
+  const chooseSaveFolder = useBeamStore((s) => s.chooseSaveFolder)
+  const clearSaveFolder = useBeamStore((s) => s.clearSaveFolder)
+  const saveFolder = useBeamStore((s) => s.saveFolder)
   const [previewFile, setPreviewFile] = useState<ReceivedFile | null>(null)
 
   if (received.length === 0) return null
 
+  const totalBytes = received.reduce((a, f) => a + f.size, 0)
+  const folderCapable = supportsSaveToFolder()
+
   return (
     <section aria-label="Received files" className="rounded-2xl border border-primary/30 bg-primary/5 shadow-sm animate-fade-up">
-      <header className="flex items-center justify-between border-b border-primary/20 px-4 py-3">
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-primary/20 px-4 py-3">
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           <ArrowUpFromLine className="h-4 w-4 text-primary" aria-hidden />
           Incoming files
           <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">{received.length}</span>
+          <span className="tnum text-xs font-normal text-muted-foreground">· {formatBytes(totalBytes)}</span>
         </h2>
+        {folderCapable && !saveFolder && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 border-primary/30 bg-background/60"
+            onClick={() => void chooseSaveFolder()}
+            title="Pick a folder once — every received file is written there automatically from then on"
+          >
+            <FolderOpen className="h-3.5 w-3.5 text-primary" aria-hidden />
+            Save to folder…
+          </Button>
+        )}
+        {saveFolder && (
+          <span className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-full border border-primary/30 bg-background/60 px-2.5 py-1 text-xs">
+            <FolderOpen className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden />
+            <span className="truncate font-medium" title={`Saving into “${saveFolder}”`}>
+              {saveFolder}
+            </span>
+            <button
+              type="button"
+              onClick={clearSaveFolder}
+              className="shrink-0 rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              aria-label={`Stop saving into ${saveFolder}`}
+            >
+              <X className="h-3 w-3" aria-hidden />
+            </button>
+          </span>
+        )}
       </header>
       <ul className="beam-scroll max-h-72 divide-y divide-primary/10 overflow-y-auto">
         {received.map((file) => (
@@ -358,7 +399,7 @@ export function ReceivedFiles() {
               )}
               <Button variant="secondary" size="sm" className="h-8" onClick={() => saveReceived(file.id)}>
                 <Download className="h-4 w-4" aria-hidden />
-                Download
+                {saveFolder ? 'Save' : 'Download'}
               </Button>
               <Button
                 variant="ghost"

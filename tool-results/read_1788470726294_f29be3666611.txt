@@ -1,0 +1,721 @@
+     1→     1→'use client'
+     2→     2→
+     3→     3→import { useEffect, useMemo, useRef, useState } from 'react'
+     4→     4→import {
+     5→     5→  ArrowDownToLine,
+     6→     6→  ArrowUpFromLine,
+     7→     7→  Camera,
+     8→     8→  CheckCircle2,
+     9→     9→  CloudOff,
+    10→    10→  Clock,
+    11→    11→  Download,
+    12→    12→  FilePlus2,
+    13→    13→  Loader2,
+    14→    14→  MonitorSmartphone,
+    15→    15→  Plus,
+    16→    16→  RotateCcw,
+    17→    17→  Share2,
+    18→    18→  ShieldCheck,
+    19→    19→  Timer,
+    20→    20→  Volume2,
+    21→    21→  VolumeX,
+    22→    22→  X,
+    23→    23→} from 'lucide-react'
+    24→    24→import { Button } from '@/components/ui/button'
+    25→    25→import { SESSION_TTL_MINUTES } from '@/lib/beam/config'
+    26→    26→import { Input } from '@/components/ui/input'
+    27→    27→import { Progress } from '@/components/ui/progress'
+    28→    28→import { useBeamStore, type TransferRow } from '@/lib/beam/engine'
+    29→    29→import { formatBytes, formatCountdown, formatSpeed } from '@/lib/beam/format'
+    30→    30→import { Logo } from '@/components/beam/logo'
+    31→    31→import { FileTypeIcon } from '@/components/beam/desktop/dropzone'
+    32→    32→import { TransferRowItem } from '@/components/beam/desktop/session-panel'
+    33→    33→import { NotesPanel } from '@/components/beam/shared/notes-panel'
+    34→    34→import { useCountdown } from '@/hooks/use-countdown'
+    35→    35→import { useSoundMuted } from '@/hooks/use-sound-muted'
+    36→    36→import { cn } from '@/lib/utils'
+    37→    37→
+    38→    38→/**
+    39→    39→ * Phone experience — opened by scanning the desktop's QR code.
+    40→    40→ * Single-screen, thumb-friendly, all 11 lifecycle states.
+    41→    41→ */
+    42→    42→export function MobileSession({ code, token }: { code: string; token: string }) {
+    43→    43→  const phase = useBeamStore((s) => s.phase)
+    44→    44→  const session = useBeamStore((s) => s.session)
+    45→    45→  const openSession = useBeamStore((s) => s.openSession)
+    46→    46→  const resetAll = useBeamStore((s) => s.resetAll)
+    47→    47→
+    48→    48→  useEffect(() => {
+    49→    49→    void openSession(code, token)
+    50→    50→    return () => resetAll()
+    51→    51→  }, [code, token, openSession, resetAll])
+    52→    52→
+    53→    53→  return (
+    54→    54→    <div className="flex min-h-screen flex-col bg-background">
+    55→    55→      <MobileHeader code={code} expiresAt={session?.expiresAt ?? 0} />
+    56→    56→
+    57→    57→      <main className="mx-auto w-full max-w-md flex-1 px-4 pb-10 pt-5 safe-bottom">
+    58→    58→        {phase === 'opening' && <OpeningView />}
+    59→    59→        {phase === 'connecting' && <ConnectingView />}
+    60→    60→        {(phase === 'connected' ||
+    61→    61→          phase === 'waiting' ||
+    62→    62→          phase === 'creating' ||
+    63→    63→          phase === 'idle') && <ConnectedView />}
+    64→    64→        {phase === 'lost' && <LostView />}
+    65→    65→        {phase === 'expired' && <ExpiredView />}
+    66→    66→        {phase === 'invalid' && <InvalidView />}
+    67→    67→        {phase === 'ended' && <EndedView />}
+    68→    68→        {phase === 'failed' && <FailedView />}
+    69→    69→      </main>
+    70→    70→
+    71→    71→      <footer className="border-t border-border/60 px-4 py-3 text-center text-[11px] text-muted-foreground safe-bottom">
+    72→    72→        <span className="inline-flex items-center gap-1">
+    73→    73→          <ShieldCheck className="h-3 w-3 text-primary" aria-hidden />
+    74→    74→          Encrypted session · Files go device-to-device
+    75→    75→        </span>
+    76→    76→      </footer>
+    77→    77→    </div>
+    78→    78→  )
+    79→    79→}
+    80→    80→
+    81→    81→/* ------------------------------------------------------------------ */
+    82→    82→/* Header                                                             */
+    83→    83→/* ------------------------------------------------------------------ */
+    84→    84→
+    85→    85→function MobileHeader({ code, expiresAt }: { code: string; expiresAt: number }) {
+    86→    86→  const remaining = useCountdown(expiresAt)
+    87→    87→  const { muted, toggle } = useSoundMuted()
+    88→    88→
+    89→    89→  useEffect(() => {
+    90→    90→    if (!expiresAt) return
+    91→    91→    const iv = setInterval(() => useBeamStore.getState().markExpiredIfDue(), 1000)
+    92→    92→    return () => clearInterval(iv)
+    93→    93→  }, [expiresAt])
+    94→    94→
+    95→    95→  return (
+    96→    96→    <header className="sticky top-0 z-40 border-b border-border/60 bg-background/85 backdrop-blur-md">
+    97→    97→      <div className="mx-auto flex h-12 w-full max-w-md items-center justify-between px-4">
+    98→    98→        <Logo size="sm" />
+    99→    99→        <div className="flex items-center gap-1.5">
+   100→   100→          <code className="tnum rounded-md border border-border bg-muted px-2 py-1 text-xs font-semibold tracking-[0.15em]">
+   101→   101→            {code}
+   102→   102→          </code>
+   103→   103→          {expiresAt > 0 && (
+   104→   104→            <span
+   105→   105→              className={cn(
+   106→   106→                'tnum inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium',
+   107→   107→                remaining < 120_000 ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400' : 'bg-muted text-muted-foreground',
+   108→   108→              )}
+   109→   109→            >
+   110→   110→              <Timer className="h-3 w-3" aria-hidden />
+   111→   111→              {formatCountdown(remaining)}
+   112→   112→            </span>
+   113→   113→          )}
+   114→   114→          <Button
+   115→   115→            variant="ghost"
+   116→   116→            size="icon"
+   117→   117→            className="h-8 w-8 text-muted-foreground"
+   118→   118→            onClick={toggle}
+   119→   119→            aria-label={muted ? 'Turn sound on' : 'Turn sound off'}
+   120→   120→          >
+   121→   121→            {muted ? <VolumeX className="h-4 w-4" aria-hidden /> : <Volume2 className="h-4 w-4" aria-hidden />}
+   122→   122→          </Button>
+   123→   123→        </div>
+   124→   124→      </div>
+   125→   125→    </header>
+   126→   126→  )
+   127→   127→}
+   128→   128→
+   129→   129→/* ------------------------------------------------------------------ */
+   130→   130→/* Transitional states                                                */
+   131→   131→/* ------------------------------------------------------------------ */
+   132→   132→
+   133→   133→function OpeningView() {
+   134→   134→  return (
+   135→   135→    <StateShell>
+   136→   136→      <Loader2 className="h-10 w-10 animate-spin text-primary" aria-hidden />
+   137→   137→      <p className="mt-4 font-medium">Opening session…</p>
+   138→   138→      <p className="mt-1 text-sm text-muted-foreground">Validating your secure pairing link</p>
+   139→   139→    </StateShell>
+   140→   140→  )
+   141→   141→}
+   142→   142→
+   143→   143→function ConnectingView() {
+   144→   144→  const mode = useBeamStore((s) => s.mode)
+   145→   145→  return (
+   146→   146→    <StateShell>
+   147→   147→      <span className="relative flex h-14 w-14 items-center justify-center">
+   148→   148→        <span className="absolute inline-flex h-full w-full rounded-full bg-primary/25 animate-beam-ping" />
+   149→   149→        <span className="relative flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
+   150→   150→          <MonitorSmartphone className="h-6 w-6 text-primary" aria-hidden />
+   151→   151→        </span>
+   152→   152→      </span>
+   153→   153→      <p className="mt-4 font-medium">Connecting…</p>
+   154→   154→      <p className="mt-1 text-sm text-muted-foreground">
+   155→   155→        {mode === 'relay' ? 'Routing through secure relay…' : 'Establishing a secure channel to your desktop'}
+   156→   156→      </p>
+   157→   157→      <ul className="mt-6 w-full space-y-2 text-left text-xs text-muted-foreground" aria-hidden>
+   158→   158→        <li className="flex items-center gap-2">
+   159→   159→          <CheckCircle2 className="h-3.5 w-3.5 text-primary" /> Link verified
+   160→   160→        </li>
+   161→   161→        <li className="flex items-center gap-2">
+   162→   162→          {mode === 'none' ? (
+   163→   163→            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+   164→   164→          ) : (
+   165→   165→            <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
+   166→   166→          )}
+   167→   167→          Pairing with desktop
+   168→   168→        </li>
+   169→   169→        <li className="flex items-center gap-2">
+   170→   170→          {mode === 'none' ? (
+   171→   171→            <span className="h-3.5 w-3.5 rounded-full border border-border" />
+   172→   172→          ) : (
+   173→   173→            <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
+   174→   174→          )}
+   175→   175→          Securing transfer channel
+   176→   176→        </li>
+   177→   177→      </ul>
+   178→   178→    </StateShell>
+   179→   179→  )
+   180→   180→}
+   181→   181→
+   182→   182→/* ------------------------------------------------------------------ */
+   183→   183→/* Connected — the main workspace                                     */
+   184→   184→/* ------------------------------------------------------------------ */
+   185→   185→
+   186→   186→function ConnectedView() {
+   187→   187→  const peerDevice = useBeamStore((s) => s.peerDevice)
+   188→   188→  const manifest = useBeamStore((s) => s.manifest)
+   189→   189→  const mode = useBeamStore((s) => s.mode)
+   190→   190→  const transfers = useBeamStore((s) => s.transfers)
+   191→   191→  const [flashIds, setFlashIds] = useState<string[]>([])
+   192→   192→
+   193→   193→  // Highlight rows the desktop added mid-session (engine emits this event)
+   194→   194→  useEffect(() => {
+   195→   195→    let timer: ReturnType<typeof setTimeout> | null = null
+   196→   196→    const onManifestUpdate = (e: Event) => {
+   197→   197→      const ids = (e as CustomEvent<{ addedIds: string[] }>).detail?.addedIds ?? []
+   198→   198→      if (ids.length === 0) return
+   199→   199→      setFlashIds(ids)
+   200→   200→      if (timer) clearTimeout(timer)
+   201→   201→      timer = setTimeout(() => setFlashIds([]), 2400)
+   202→   202→    }
+   203→   203→    window.addEventListener('beam:manifest-update', onManifestUpdate)
+   204→   204→    return () => {
+   205→   205→      window.removeEventListener('beam:manifest-update', onManifestUpdate)
+   206→   206→      if (timer) clearTimeout(timer)
+   207→   207→    }
+   208→   208→  }, [])
+   209→   209→
+   210→   210→  const d2pRows = useMemo(
+   211→   211→    () => Object.values(transfers).filter((t) => t.direction === 'd2p'),
+   212→   212→    [transfers],
+   213→   213→  )
+   214→   214→  const p2dRows = useMemo(
+   215→   215→    () => Object.values(transfers).filter((t) => t.direction === 'p2d'),
+   216→   216→    [transfers],
+   217→   217→  )
+   218→   218→  const d2pActive = d2pRows.some((r) => r.status === 'active' || r.status === 'queued')
+   219→   219→  const p2dActive = p2dRows.some((r) => r.status === 'active' || r.status === 'queued')
+   220→   220→
+   221→   221→  return (
+   222→   222→    <div className="space-y-5 animate-fade-up">
+   223→   223→      {/* Connection banner */}
+   224→   224→      <div
+   225→   225→        className={cn(
+   226→   226→          'flex items-center gap-3 rounded-2xl border p-4',
+   227→   227→          peerDevice ? 'border-primary/30 bg-primary/5' : 'border-border bg-card',
+   228→   228→        )}
+   229→   229→      >
+   230→   230→        <span className="relative flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+   231→   231→          <MonitorSmartphone className="h-5 w-5" aria-hidden />
+   232→   232→        </span>
+   233→   233→        <div className="min-w-0 flex-1">
+   234→   234→          <p className="font-semibold leading-tight">Connected to Desktop</p>
+   235→   235→          <p className="text-xs text-muted-foreground">
+   236→   236→            {peerDevice
+   237→   237→              ? 'Your computer is ready to exchange files'
+   238→   238→              : 'Waiting for the computer to appear…'}
+   239→   239→          </p>
+   240→   240→        </div>
+   241→   241→        <span className="relative flex h-2.5 w-2.5" aria-label="Connection status: connected">
+   242→   242→          <span className="absolute inline-flex h-full w-full rounded-full bg-primary animate-beam-ping" />
+   243→   243→          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-primary" />
+   244→   244→        </span>
+   245→   245→      </div>
+   246→   246→
+   247→   247→      {/* Receive: files from desktop */}
+   248→   248→      <section aria-label="Files available for download" className="rounded-2xl border border-border bg-card shadow-sm">
+   249→   249→        <header className="flex items-center justify-between gap-2 border-b border-border/70 px-4 py-3">
+   250→   250→          <h2 className="flex items-center gap-2 text-sm font-semibold">
+   251→   251→            <ArrowDownToLine className="h-4 w-4 text-primary" aria-hidden />
+   252→   252→            From desktop
+   253→   253→            {manifest.length > 0 && (
+   254→   254→              <span
+   255→   255→                key={manifest.length}
+   256→   256→                className="tnum animate-pop rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+   257→   257→              >
+   258→   258→                {manifest.length}
+   259→   259→              </span>
+   260→   260→            )}
+   261→   261→          </h2>
+   262→   262→          {manifest.length > 1 && (
+   263→   263→            <Button size="sm" variant="secondary" className="h-8" onClick={() => useBeamStore.getState().downloadAll()} disabled={d2pActive}>
+   264→   264→              <Download className="h-3.5 w-3.5" aria-hidden />
+   265→   265→              Download All
+   266→   266→            </Button>
+   267→   267→          )}
+   268→   268→        </header>
+   269→   269→
+   270→   270→        {manifest.length === 0 ? (
+   271→   271→          <div className="px-4 py-8 text-center">
+   272→   272→            <p className="text-sm font-medium">No files yet</p>
+   273→   273→            <p className="mt-1 text-xs text-muted-foreground">
+   274→   274→              {peerDevice
+   275→   275→                ? 'The desktop hasn’t added any files. Use the send section below to push files to it.'
+   276→   276→                : 'Keep this page open — it will connect automatically.'}
+   277→   277→            </p>
+   278→   278→          </div>
+   279→   279→        ) : (
+   280→   280→          <ul className="beam-scroll max-h-[46vh] divide-y divide-border/60 overflow-y-auto">
+   281→   281→            {manifest.map((file) => (
+   282→   282→              <MobileFileRow key={file.id} fileId={file.id} flash={flashIds.includes(file.id)} />
+   283→   283→            ))}
+   284→   284→          </ul>
+   285→   285→        )}
+   286→   286→
+   287→   287→        {d2pRows.length > 0 && (
+   288→   288→          <div className="border-t border-border/70">
+   289→   289→            <BatchProgress rows={d2pRows} />
+   290→   290→            <ul className="divide-y divide-border/60">
+   291→   291→              {d2pRows
+   292→   292→                .sort((a, b) => (a.status === 'active' ? -1 : b.status === 'active' ? 1 : 0))
+   293→   293→                .slice(-6)
+   294→   294→                .map((row) => (
+   295→   295→                  <TransferRowItem key={row.id} row={row} />
+   296→   296→                ))}
+   297→   297→            </ul>
+   298→   298→          </div>
+   299→   299→        )}
+   300→   300→      </section>
+   301→   301→
+   302→   302→      {/* Send: files to desktop */}
+   303→   303→      <SendToDesktop disabled={!peerDevice || mode === 'none'} rows={p2dRows} active={p2dActive} />
+   304→   304→
+   305→   305→      {/* Text notes — works over relay or P2P, independent of file transfers */}
+   306→   306→      <NotesPanel variant="mobile" />
+   307→   307→
+   308→   308→      {mode === 'relay' && (
+   309→   309→        <p className="flex items-start gap-2 rounded-xl bg-muted/60 px-3.5 py-2.5 text-xs text-muted-foreground">
+   310→   310→          <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" aria-hidden />
+   311→   311→          Direct connection wasn’t possible — transfers are relaying through Beam’s secure server. Everything stays encrypted.
+   312→   312→        </p>
+   313→   313→      )}
+   314→   314→    </div>
+   315→   315→  )
+   316→   316→}
+   317→   317→
+   318→   318→/** Aggregate progress for a batch of downloads (e.g. "Download All"). */
+   319→   319→function BatchProgress({ rows }: { rows: TransferRow[] }) {
+   320→   320→  const relevant = rows.filter((r) => r.status !== 'canceled')
+   321→   321→  const total = relevant.reduce((a, r) => a + r.size, 0)
+   322→   322→  const done = relevant.reduce((a, r) => a + r.transferred, 0)
+   323→   323→  const active = relevant.filter((r) => r.status === 'active' || r.status === 'queued').length
+   324→   324→  const finished = relevant.filter((r) => r.status === 'done').length
+   325→   325→  const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0
+   326→   326→
+   327→   327→  if (relevant.length < 2) return null
+   328→   328→
+   329→   329→  return (
+   330→   330→    <div className="bg-muted/40 px-4 py-2.5">
+   331→   331→      <div className="flex items-center justify-between text-xs">
+   332→   332→        <span className="font-medium text-foreground">
+   333→   333→          {active > 0 ? `Downloading ${finished + 1} of ${relevant.length}` : `${finished} of ${relevant.length} downloaded`}
+   334→   334→        </span>
+   335→   335→        <span className="tnum text-muted-foreground">
+   336→   336→          {formatBytes(done)} / {formatBytes(total)}
+   337→   337→        </span>
+   338→   338→      </div>
+   339→   339→      <Progress value={pct} className="mt-1.5 h-1.5" aria-label={`Batch progress ${pct.toFixed(0)}%`} />
+   340→   340→    </div>
+   341→   341→  )
+   342→   342→}
+   343→   343→
+   344→   344→function MobileFileRow({ fileId, flash = false }: { fileId: string; flash?: boolean }) {
+   345→   345→  const file = useBeamStore((s) => s.manifest.find((f) => f.id === fileId))
+   346→   346→  const transfers = useBeamStore((s) => s.transfers)
+   347→   347→  const requestDownload = useBeamStore((s) => s.requestDownload)
+   348→   348→  const shareReceived = useBeamStore((s) => s.shareReceived)
+   349→   349→  const retryTransfer = useBeamStore((s) => s.retryTransfer)
+   350→   350→
+   351→   351→  const rows = useMemo(
+   352→   352→    () =>
+   353→   353→      Object.values(transfers).filter((t) => t.fileId === fileId && t.direction === 'd2p'),
+   354→   354→    [transfers, fileId],
+   355→   355→  )
+   356→   356→
+   357→   357→  if (!file) return null
+   358→   358→  const row = rows[rows.length - 1]
+   359→   359→  const busy = row && (row.status === 'queued' || row.status === 'active')
+   360→   360→  const failed = row?.status === 'error'
+   361→   361→  const done = rows.some((r) => r.status === 'done')
+   362→   362→  // Once downloaded, images get a real thumbnail from the received blob.
+   363→   363→  const receivedThumb = done && file.type.startsWith('image/')
+   364→   364→    ? useBeamStore.getState().received.find((r) => r.name === file.name && r.size === file.size)?.url ?? null
+   365→   365→    : null
+   366→   366→
+   367→   367→  return (
+   368→   368→    <li className={cn('flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/40', flash && 'animate-flash')}>
+   369→   369→      {receivedThumb ? (
+   370→   370→        <img
+   371→   371→          src={receivedThumb}
+   372→   372→          alt=""
+   373→   373→          className="h-10 w-10 shrink-0 rounded-lg border border-border object-cover"
+   374→   374→          loading="lazy"
+   375→   375→        />
+   376→   376→      ) : (
+   377→   377→        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
+   378→   378→          <FileTypeIcon type={file.type} name={file.name} className="h-4.5 w-4.5" />
+   379→   379→        </span>
+   380→   380→      )}
+   381→   381→      <div className="min-w-0 flex-1">
+   382→   382→        <p className="truncate text-sm font-medium" title={file.name}>
+   383→   383→          {file.name}
+   384→   384→        </p>
+   385→   385→        <p className={cn('tnum truncate text-xs', failed ? 'text-destructive' : 'text-muted-foreground')}>
+   386→   386→          {row?.status === 'active'
+   387→   387→            ? `${(row.size > 0 ? (row.transferred / row.size) * 100 : 0).toFixed(0)}% · ${formatSpeed(row.speed)}`
+   388→   388→            : failed
+   389→   389→              ? (row?.error ?? 'Download failed')
+   390→   390→              : formatBytes(file.size)}
+   391→   391→        </p>
+   392→   392→      </div>
+   393→   393→      {done ? (
+   394→   394→        <div className="flex items-center gap-1">
+   395→   395→          <Button
+   396→   396→            variant="ghost"
+   397→   397→            size="icon"
+   398→   398→            className="h-8 w-8"
+   399→   399→            onClick={() => {
+   400→   400→              const rec = useBeamStore.getState().received.find((r) => r.name === file.name)
+   401→   401→              if (rec) void shareReceived(rec.id)
+   402→   402→            }}
+   403→   403→            aria-label={`Share or re-save ${file.name}`}
+   404→   404→          >
+   405→   405→            <Share2 className="h-4 w-4" />
+   406→   406→          </Button>
+   407→   407→          <span className="inline-flex items-center gap-1 text-xs font-medium text-primary">
+   408→   408→            <CheckCircle2 className="h-4 w-4" aria-hidden />
+   409→   409→            Saved
+   410→   410→          </span>
+   411→   411→        </div>
+   412→   412→      ) : failed ? (
+   413→   413→        <Button
+   414→   414→          size="sm"
+   415→   415→          variant="outline"
+   416→   416→          className="h-9 min-w-20 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+   417→   417→          onClick={() => retryTransfer(row!.id)}
+   418→   418→        >
+   419→   419→          <RotateCcw className="h-4 w-4" aria-hidden />
+   420→   420→          Retry
+   421→   421→        </Button>
+   422→   422→      ) : (
+   423→   423→        <Button size="sm" className="h-9 min-w-24" onClick={() => requestDownload(fileId)} disabled={busy}>
+   424→   424→          {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Download className="h-4 w-4" aria-hidden />}
+   425→   425→          {busy ? 'Busy…' : 'Download'}
+   426→   426→        </Button>
+   427→   427→      )}
+   428→   428→    </li>
+   429→   429→  )
+   430→   430→}
+   431→   431→
+   432→   432→function SendToDesktop({
+   433→   433→  disabled,
+   434→   434→  rows,
+   435→   435→  active,
+   436→   436→}: {
+   437→   437→  disabled: boolean
+   438→   438→  rows: TransferRow[]
+   439→   439→  active: boolean
+   440→   440→}) {
+   441→   441→  const addMobileFiles = useBeamStore((s) => s.addMobileFiles)
+   442→   442→  const removeMobileFile = useBeamStore((s) => s.removeMobileFile)
+   443→   443→  const retryTransfer = useBeamStore((s) => s.retryTransfer)
+   444→   444→  const mobileFiles = useBeamStore((s) => s.mobileFiles)
+   445→   445→  const pickRef = useRef<HTMLInputElement>(null)
+   446→   446→  const cameraRef = useRef<HTMLInputElement>(null)
+   447→   447→
+   448→   448→  return (
+   449→   449→    <section aria-label="Send files to desktop" className="rounded-2xl border border-border bg-card shadow-sm">
+   450→   450→      <header className="border-b border-border/70 px-4 py-3">
+   451→   451→        <h2 className="flex items-center gap-2 text-sm font-semibold">
+   452→   452→          <ArrowUpFromLine className="h-4 w-4 text-purple-600 dark:text-purple-400" aria-hidden />
+   453→   453→          Send files to desktop
+   454→   454→        </h2>
+   455→   455→        <p className="mt-0.5 text-xs text-muted-foreground">Photos, videos, voice notes — they land on your computer</p>
+   456→   456→      </header>
+   457→   457→
+   458→   458→      <input
+   459→   459→        ref={pickRef}
+   460→   460→        type="file"
+   461→   461→        multiple
+   462→   462→        className="sr-only"
+   463→   463→        aria-hidden
+   464→   464→        tabIndex={-1}
+   465→   465→        onChange={(e) => {
+   466→   466→          if (e.target.files?.length) addMobileFiles(e.target.files)
+   467→   467→          e.target.value = ''
+   468→   468→        }}
+   469→   469→      />
+   470→   470→      <input
+   471→   471→        ref={cameraRef}
+   472→   472→        type="file"
+   473→   473→        accept="image/*,video/*"
+   474→   474→        capture="environment"
+   475→   475→        className="sr-only"
+   476→   476→        aria-hidden
+   477→   477→        tabIndex={-1}
+   478→   478→        onChange={(e) => {
+   479→   479→          if (e.target.files?.length) addMobileFiles(e.target.files)
+   480→   480→          e.target.value = ''
+   481→   481→        }}
+   482→   482→      />
+   483→   483→
+   484→   484→      <div className="grid grid-cols-2 gap-2.5 p-4">
+   485→   485→        <Button className="h-11" onClick={() => pickRef.current?.click()} disabled={disabled}>
+   486→   486→          <Plus className="h-4 w-4" aria-hidden />
+   487→   487→          Select Files
+   488→   488→        </Button>
+   489→   489→        <Button variant="outline" className="h-11" onClick={() => cameraRef.current?.click()} disabled={disabled}>
+   490→   490→          <Camera className="h-4 w-4" aria-hidden />
+   491→   491→          Camera
+   492→   492→        </Button>
+   493→   493→      </div>
+   494→   494→
+   495→   495→      {mobileFiles.length > 0 && (
+   496→   496→        <ul className="divide-y divide-border/60 border-t border-border/70">
+   497→   497→          {mobileFiles.map((f) => {
+   498→   498→            const row = rows.filter((r) => r.fileId === f.id).at(-1)
+   499→   499→            return (
+   500→   500→              <li key={f.id} className="flex items-center gap-3 px-4 py-3">
+   501→   501→                {f.previewUrl ? (
+   502→   502→                  <img
+   503→   503→                    src={f.previewUrl}
+   504→   504→                    alt=""
+   505→   505→                    className="h-9 w-9 shrink-0 rounded-lg border border-border object-cover"
+   506→   506→                    loading="lazy"
+   507→   507→                  />
+   508→   508→                ) : (
+   509→   509→                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted">
+   510→   510→                    <FileTypeIcon type={f.type} name={f.name} className="h-4 w-4" />
+   511→   511→                  </span>
+   512→   512→                )}
+   513→   513→                <div className="min-w-0 flex-1">
+   514→   514→                  <p className="truncate text-sm font-medium">{f.name}</p>
+   515→   515→                  <p className="tnum text-xs text-muted-foreground">
+   516→   516→                    {row?.status === 'active'
+   517→   517→                      ? `${(row.size > 0 ? (row.transferred / row.size) * 100 : 0).toFixed(0)}% · ${formatSpeed(row.speed)}`
+   518→   518→                      : row?.status === 'done'
+   519→   519→                        ? 'Delivered to desktop'
+   520→   520→                        : row?.status === 'queued'
+   521→   521→                          ? 'Queued…'
+   522→   522→                          : row?.status === 'error'
+   523→   523→                            ? row.error ?? 'Failed'
+   524→   524→                            : formatBytes(f.size)}
+   525→   525→                  </p>
+   526→   526→                </div>
+   527→   527→                {row?.status === 'done' ? (
+   528→   528→                  <CheckCircle2 className="h-5 w-5 shrink-0 text-primary" aria-label="Upload completed" />
+   529→   529→                ) : row?.status === 'error' ? (
+   530→   530→                  <Button
+   531→   531→                    variant="outline"
+   532→   532→                    size="sm"
+   533→   533→                    className="h-8 shrink-0 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+   534→   534→                    onClick={() => retryTransfer(row.id)}
+   535→   535→                  >
+   536→   536→                    <RotateCcw className="h-3.5 w-3.5" aria-hidden />
+   537→   537→                    Retry
+   538→   538→                  </Button>
+   539→   539→                ) : (
+   540→   540→                  <Button
+   541→   541→                    variant="ghost"
+   542→   542→                    size="icon"
+   543→   543→                    className="h-8 w-8 shrink-0 text-muted-foreground"
+   544→   544→                    onClick={() => removeMobileFile(f.id)}
+   545→   545→                    disabled={row?.status === 'active'}
+   546→   546→                    aria-label={`Stop sending ${f.name}`}
+   547→   547→                  >
+   548→   548→                    <X className="h-4 w-4" />
+   549→   549→                  </Button>
+   550→   550→                )}
+   551→   551→              </li>
+   552→   552→            )
+   553→   553→          })}
+   554→   554→        </ul>
+   555→   555→      )}
+   556→   556→
+   557→   557→      {active && (
+   558→   558→        <p className="tnum border-t border-border/70 px-4 py-2 text-center text-xs text-muted-foreground">
+   559→   559→          Uploading to desktop…
+   560→   560→        </p>
+   561→   561→      )}
+   562→   562→    </section>
+   563→   563→  )
+   564→   564→}
+   565→   565→
+   566→   566→/* ------------------------------------------------------------------ */
+   567→   567→/* Problem states                                                     */
+   568→   568→/* ------------------------------------------------------------------ */
+   569→   569→
+   570→   570→function LostView() {
+   571→   571→  const error = useBeamStore((s) => s.error)
+   572→   572→  const reconnect = useBeamStore((s) => s.reconnect)
+   573→   573→  return (
+   574→   574→    <StateShell tone="border-amber-500/30 bg-amber-500/5">
+   575→   575→      <span className="flex h-14 w-14 items-center justify-center rounded-full bg-amber-500/15">
+   576→   576→        <CloudOff className="h-6 w-6 text-amber-600 dark:text-amber-400" aria-hidden />
+   577→   577→      </span>
+   578→   578→      <p className="mt-4 font-semibold">Connection lost</p>
+   579→   579→      <p className="mt-1 text-sm text-muted-foreground">
+   580→   580→        {error?.message ?? 'The connection to your desktop dropped.'}
+   581→   581→      </p>
+   582→   582→      <Button className="mt-5 min-w-40" onClick={reconnect}>
+   583→   583→        <RotateCcw className="h-4 w-4" aria-hidden />
+   584→   584→        Reconnect
+   585→   585→      </Button>
+   586→   586→      <p className="mt-3 text-xs text-muted-foreground">The QR code on your desktop is still valid.</p>
+   587→   587→    </StateShell>
+   588→   588→  )
+   589→   589→}
+   590→   590→
+   591→   591→function ExpiredView() {
+   592→   592→  return (
+   593→   593→    <StateShell tone="border-amber-500/30 bg-amber-500/5">
+   594→   594→      <span className="flex h-14 w-14 items-center justify-center rounded-full bg-amber-500/15">
+   595→   595→        <Clock className="h-6 w-6 text-amber-600 dark:text-amber-400" aria-hidden />
+   596→   596→      </span>
+   597→   597→      <p className="mt-4 font-semibold">Session expired</p>
+   598→   598→      <p className="mt-1 text-sm text-muted-foreground">
+   599→   599→        This pairing session expired after {SESSION_TTL_MINUTES} minutes. Ask the desktop for a fresh QR code.
+   600→   600→      </p>
+   601→   601→      <StartOverLink />
+   602→   602→    </StateShell>
+   603→   603→  )
+   604→   604→}
+   605→   605→
+   606→   606→function InvalidView() {
+   607→   607→  const error = useBeamStore((s) => s.error)
+   608→   608→  const [manual, setManual] = useState('')
+   609→   609→  const openSession = useBeamStore((s) => s.openSession)
+   610→   610→
+   611→   611→  const tryManual = () => {
+   612→   612→    const v = manual.trim()
+   613→   613→    try {
+   614→   614→      const url = new URL(v)
+   615→   615→      const s = url.searchParams.get('s')
+   616→   616→      const t = url.searchParams.get('t')
+   617→   617→      if (s && t) {
+   618→   618→        window.location.assign(`/?s=${encodeURIComponent(s)}&t=${encodeURIComponent(t)}`)
+   619→   619→        return
+   620→   620→      }
+   621→   621→    } catch {
+   622→   622→      // not a URL
+   623→   623→    }
+   624→   624→    const m = v.match(/^([A-HJ-NP-Z2-9]{6})-([A-Za-z0-9]{8,128})$/i)
+   625→   625→    if (m) {
+   626→   626→      window.location.assign(`/?s=${encodeURIComponent(m[1]!.toUpperCase())}&t=${encodeURIComponent(m[2]!)}`)
+   627→   627→      return
+   628→   628→    }
+   629→   629→    window.location.assign('/')
+   630→   630→  }
+   631→   631→
+   632→   632→  return (
+   633→   633→    <StateShell tone="border-destructive/30 bg-destructive/5">
+   634→   634→      <span className="flex h-14 w-14 items-center justify-center rounded-full bg-destructive/10">
+   635→   635→        <CloudOff className="h-6 w-6 text-destructive" aria-hidden />
+   636→   636→      </span>
+   637→   637→      <p className="mt-4 font-semibold">{error?.title ?? 'Invalid or expired link'}</p>
+   638→   638→      <p className="mt-1 text-sm text-muted-foreground">
+   639→   639→        {error?.message ?? 'This QR link is no longer valid. Scan a fresh code from the desktop.'}
+   640→   640→      </p>
+   641→   641→      <div className="mt-5 w-full space-y-2">
+   642→   642→        <Input
+   643→   643→          value={manual}
+   644→   644→          onChange={(e) => setManual(e.target.value)}
+   645→   645→          placeholder="Paste pairing link or CODE-KEY"
+   646→   646→          aria-label="Pairing link or manual code"
+   647→   647→          className="h-11 bg-background text-center"
+   648→   648→        />
+   649→   649→        <Button className="h-11 w-full" onClick={tryManual}>
+   650→   650→          <FilePlus2 className="h-4 w-4" aria-hidden />
+   651→   651→          Try pairing key
+   652→   652→        </Button>
+   653→   653→      </div>
+   654→   654→      <StartOverLink />
+   655→   655→    </StateShell>
+   656→   656→  )
+   657→   657→}
+   658→   658→
+   659→   659→function EndedView() {
+   660→   660→  return (
+   661→   661→    <StateShell tone="border-primary/30 bg-primary/5">
+   662→   662→      <span className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
+   663→   663→        <CheckCircle2 className="h-6 w-6 text-primary" aria-hidden />
+   664→   664→      </span>
+   665→   665→      <p className="mt-4 font-semibold">Session ended</p>
+   666→   666→      <p className="mt-1 text-sm text-muted-foreground">The desktop closed this transfer session.</p>
+   667→   667→      <StartOverLink />
+   668→   668→    </StateShell>
+   669→   669→  )
+   670→   670→}
+   671→   671→
+   672→   672→function FailedView() {
+   673→   673→  const error = useBeamStore((s) => s.error)
+   674→   674→  const reconnect = useBeamStore((s) => s.reconnect)
+   675→   675→  return (
+   676→   676→    <StateShell tone="border-destructive/30 bg-destructive/5">
+   677→   677→      <span className="flex h-14 w-14 items-center justify-center rounded-full bg-destructive/10">
+   678→   678→        <CloudOff className="h-6 w-6 text-destructive" aria-hidden />
+   679→   679→      </span>
+   680→   680→      <p className="mt-4 font-semibold">{error?.title ?? 'Something went wrong'}</p>
+   681→   681→      <p className="mt-1 text-sm text-muted-foreground">{error?.message ?? 'An unexpected error occurred.'}</p>
+   682→   682→      <Button className="mt-5 min-w-40" onClick={reconnect}>
+   683→   683→        <RotateCcw className="h-4 w-4" aria-hidden />
+   684→   684→        Try again
+   685→   685→      </Button>
+   686→   686→      <StartOverLink />
+   687→   687→    </StateShell>
+   688→   688→  )
+   689→   689→}
+   690→   690→
+   691→   691→function StartOverLink() {
+   692→   692→  return (
+   693→   693→    <button
+   694→   694→      type="button"
+   695→   695→      onClick={() => window.location.assign('/')}
+   696→   696→      className="mt-5 text-sm font-medium text-primary underline-offset-4 hover:underline"
+   697→   697→    >
+   698→   698→      Go to Beam home
+   699→   699→    </button>
+   700→   700→  )
+   701→   701→}
+   702→   702→
+   703→   703→function StateShell({
+   704→   704→  children,
+   705→   705→  tone,
+   706→   706→}: {
+   707→   707→  children: React.ReactNode
+   708→   708→  tone?: string
+   709→   709→}) {
+   710→   710→  return (
+   711→   711→    <div
+   712→   712→      className={cn(
+   713→   713→        'flex min-h-[55vh] flex-col items-center justify-center rounded-2xl border px-6 py-10 text-center animate-fade-up',
+   714→   714→        tone ?? 'border-border bg-card',
+   715→   715→      )}
+   716→   716→    >
+   717→   717→      {children}
+   718→   718→    </div>
+   719→   719→  )
+   720→   720→}
+   721→   721→

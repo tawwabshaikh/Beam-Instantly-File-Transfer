@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { useBeamStore } from '@/lib/beam/engine'
 import { formatCountdown } from '@/lib/beam/format'
-import { EXTEND_WINDOW_MS } from '@/lib/beam/protocol'
+import { extendWindowFor } from '@/lib/beam/protocol'
 import { ExtendButton } from '@/components/beam/desktop/session-panel'
 import { useCountdown } from '@/hooks/use-countdown'
 import { cn } from '@/lib/utils'
@@ -39,6 +39,7 @@ export function QrCard({ variant }: { variant: 'full' | 'compact' }) {
   const phase = useBeamStore((s) => s.phase)
   const peerDevice = useBeamStore((s) => s.peerDevice)
   const mode = useBeamStore((s) => s.mode)
+  const ttlMinutes = useBeamStore((s) => s.ttlMinutes)
   const createNewSession = useBeamStore((s) => s.createNewSession)
   const markExpiredIfDue = useBeamStore((s) => s.markExpiredIfDue)
 
@@ -54,6 +55,7 @@ export function QrCard({ variant }: { variant: 'full' | 'compact' }) {
   const connecting = phase === 'connecting'
 
   const expiresSoon = remaining > 0 && remaining < 120_000
+  const extendWindow = extendWindowFor(ttlMinutes * 60_000)
 
   if (variant === 'compact') {
     return (
@@ -83,6 +85,7 @@ export function QrCard({ variant }: { variant: 'full' | 'compact' }) {
                 remaining={remaining}
                 expiresSoon={expiresSoon}
                 joined
+                ttlMinutes={ttlMinutes}
               />
             </DialogContent>
           </Dialog>
@@ -103,7 +106,7 @@ export function QrCard({ variant }: { variant: 'full' | 'compact' }) {
 
   /* ---------------- full variant (waiting / connecting) ---------------- */
 
-  const canExtendHere = remaining > 0 && remaining <= EXTEND_WINDOW_MS && !connecting
+  const canExtendHere = remaining > 0 && remaining <= extendWindow && !connecting
 
   return (
     <section
@@ -133,6 +136,7 @@ export function QrCard({ variant }: { variant: 'full' | 'compact' }) {
           remaining={remaining}
           expiresSoon={expiresSoon}
           joined={false}
+          ttlMinutes={ttlMinutes}
         />
       ) : (
         <div className="flex min-h-[320px] items-center justify-center">
@@ -184,6 +188,7 @@ function QrPanel({
   remaining,
   expiresSoon,
   joined,
+  ttlMinutes,
 }: {
   qr: string | null
   joinUrl: string
@@ -191,6 +196,7 @@ function QrPanel({
   remaining: number
   expiresSoon: boolean
   joined: boolean
+  ttlMinutes: number
 }) {
   const [copied, setCopied] = useState<'link' | 'code' | null>(null)
   const [manualValue, setManualValue] = useState('')
@@ -228,6 +234,12 @@ function QrPanel({
             <Loader2 className="h-6 w-6 animate-spin text-neutral-400" aria-hidden />
           </div>
         )}
+        {/* animated scan sweep while the code waits to be picked up */}
+        {qr && !joined && (
+          <span aria-hidden className="pointer-events-none absolute inset-3 overflow-hidden rounded-xl">
+            <span className="beam-scan-line absolute inset-x-0 h-0.5 rounded-full bg-gradient-to-r from-transparent via-primary to-transparent shadow-[0_0_14px_rgba(16,185,129,0.65)]" />
+          </span>
+        )}
         {joined && (
           <span className="absolute inset-0 flex items-center justify-center">
             <span className="rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground shadow">
@@ -241,6 +253,11 @@ function QrPanel({
       <p className={cn('tnum mt-1 text-sm', expiresSoon ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-muted-foreground')}>
         Session expires in {formatCountdown(remaining)}
       </p>
+      {!joined && (
+        <span className="tnum mt-1.5 rounded-full border border-border bg-muted/60 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+          Link valid for {ttlMinutes} min
+        </span>
+      )}
 
       {/* Fallback code */}
       <div className="mt-4 flex w-full flex-col items-center gap-2">

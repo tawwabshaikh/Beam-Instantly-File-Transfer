@@ -10,10 +10,12 @@ import {
   Clock,
   Download,
   FilePlus2,
+  Files,
   Loader2,
   MonitorSmartphone,
   Plus,
   RotateCcw,
+  ScanLine,
   Share2,
   ShieldCheck,
   Timer,
@@ -31,6 +33,7 @@ import { Logo } from '@/components/beam/logo'
 import { FileTypeIcon } from '@/components/beam/desktop/dropzone'
 import { TransferRowItem } from '@/components/beam/desktop/session-panel'
 import { NotesPanel } from '@/components/beam/shared/notes-panel'
+import { QrScannerDialog } from '@/components/beam/shared/qr-scanner'
 import { useCountdown } from '@/hooks/use-countdown'
 import { useSoundMuted } from '@/hooks/use-sound-muted'
 import { cn } from '@/lib/utils'
@@ -589,6 +592,7 @@ function LostView() {
 }
 
 function ExpiredView() {
+  const stats = useBeamStore((s) => s.stats)
   return (
     <StateShell tone="border-amber-500/30 bg-amber-500/5">
       <span className="flex h-14 w-14 items-center justify-center rounded-full bg-amber-500/15">
@@ -598,6 +602,7 @@ function ExpiredView() {
       <p className="mt-1 text-sm text-muted-foreground">
         This pairing session expired after {SESSION_TTL_MINUTES} minutes. Ask the desktop for a fresh QR code.
       </p>
+      <SessionSummaryLine files={stats.filesTransferred} bytes={stats.totalData} />
       <StartOverLink />
     </StateShell>
   )
@@ -606,6 +611,7 @@ function ExpiredView() {
 function InvalidView() {
   const error = useBeamStore((s) => s.error)
   const [manual, setManual] = useState('')
+  const [scanOpen, setScanOpen] = useState(false)
   const openSession = useBeamStore((s) => s.openSession)
 
   const tryManual = () => {
@@ -638,7 +644,11 @@ function InvalidView() {
       <p className="mt-1 text-sm text-muted-foreground">
         {error?.message ?? 'This QR link is no longer valid. Scan a fresh code from the desktop.'}
       </p>
-      <div className="mt-5 w-full space-y-2">
+      <Button variant="outline" className="mt-5 h-11 w-full" onClick={() => setScanOpen(true)}>
+        <ScanLine className="h-4 w-4 text-primary" aria-hidden />
+        Scan a fresh QR code
+      </Button>
+      <div className="mt-3 w-full space-y-2">
         <Input
           value={manual}
           onChange={(e) => setManual(e.target.value)}
@@ -652,11 +662,20 @@ function InvalidView() {
         </Button>
       </div>
       <StartOverLink />
+      <QrScannerDialog
+        open={scanOpen}
+        onOpenChange={setScanOpen}
+        onResult={(code, token) => {
+          setScanOpen(false)
+          window.location.assign(`/?s=${encodeURIComponent(code)}&t=${encodeURIComponent(token)}`)
+        }}
+      />
     </StateShell>
   )
 }
 
 function EndedView() {
+  const stats = useBeamStore((s) => s.stats)
   return (
     <StateShell tone="border-primary/30 bg-primary/5">
       <span className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
@@ -664,6 +683,7 @@ function EndedView() {
       </span>
       <p className="mt-4 font-semibold">Session ended</p>
       <p className="mt-1 text-sm text-muted-foreground">The desktop closed this transfer session.</p>
+      <SessionSummaryLine files={stats.filesTransferred} bytes={stats.totalData} />
       <StartOverLink />
     </StateShell>
   )
@@ -697,6 +717,17 @@ function StartOverLink() {
     >
       Go to Beam home
     </button>
+  )
+}
+
+/** Compact "what happened this session" chip for terminal states. */
+function SessionSummaryLine({ files, bytes }: { files: number; bytes: number }) {
+  if (files <= 0) return null
+  return (
+    <p className="tnum mt-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1 text-xs font-medium shadow-sm">
+      <Files className="h-3.5 w-3.5 text-primary" aria-hidden />
+      {files} file{files === 1 ? '' : 's'} · {formatBytes(bytes)} moved
+    </p>
   )
 }
 

@@ -1,7 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { AlertTriangle, RotateCcw, CheckCircle2, Clock, Plus } from 'lucide-react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { AlertTriangle, RotateCcw, CheckCircle2, Clock, Files, Plus, ScanLine } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { SiteHeader, type DesktopNavView } from '@/components/beam/site-header'
 import { SiteFooter } from '@/components/beam/site-footer'
@@ -10,10 +10,13 @@ import { DropzoneCard, FilesCard } from '@/components/beam/desktop/dropzone'
 import { QrCard } from '@/components/beam/desktop/qr-card'
 import { SessionDashboard, TransfersList, ReceivedFiles } from '@/components/beam/desktop/session-panel'
 import { NotesPanel } from '@/components/beam/shared/notes-panel'
+import { GlobalDropOverlay } from '@/components/beam/shared/global-drop-overlay'
+import { QrScannerDialog } from '@/components/beam/shared/qr-scanner'
 import { HistoryView } from '@/components/beam/desktop/history-view'
 import { AboutView } from '@/components/beam/desktop/about-view'
 import { useBeamStore } from '@/lib/beam/engine'
-import { formatCountdown } from '@/lib/beam/format'
+import { formatBytes, formatCountdown } from '@/lib/beam/format'
+import { getDeviceInfo } from '@/lib/beam/device'
 import { SESSION_TTL_MINUTES } from '@/lib/beam/config'
 import { useCountdown } from '@/hooks/use-countdown'
 
@@ -34,7 +37,57 @@ export function DesktopApp() {
         {view === 'about' && <AboutView />}
       </main>
       <SiteFooter />
+      {/* Drop files anywhere on the page — not just the dropzone card */}
+      <GlobalDropOverlay onDropped={() => setView('transfer')} />
+      {/* Phones that open Beam directly can scan the desktop QR in-app */}
+      <MobileScanFab />
     </div>
+  )
+}
+
+const emptySubscribe = () => () => {}
+
+/** Hydration-safe "client mounted" check without setState-in-effect. */
+function useMounted(): boolean {
+  return useSyncExternalStore(
+    emptySubscribe,
+    () => true,
+    () => false,
+  )
+}
+
+/**
+ * Floating "Scan QR" action for phones landing on the desktop page without
+ * pairing params (e.g. typed the address or opened the installed PWA). Lets
+ * them join a session without leaving the app for the camera.
+ */
+function MobileScanFab() {
+  const mounted = useMounted()
+  const [scanOpen, setScanOpen] = useState(false)
+
+  if (!mounted || !getDeviceInfo().isMobile) return null
+  if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('s')) return null
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setScanOpen(true)}
+        className="fixed bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-5 z-50 inline-flex h-14 items-center gap-2 rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-xl shadow-primary/30 transition-transform active:scale-95"
+        aria-label="Scan a desktop QR code to pair"
+      >
+        <ScanLine className="h-5 w-5" aria-hidden />
+        Scan QR
+      </button>
+      <QrScannerDialog
+        open={scanOpen}
+        onOpenChange={setScanOpen}
+        onResult={(code, token) => {
+          setScanOpen(false)
+          window.location.assign(`/?s=${encodeURIComponent(code)}&t=${encodeURIComponent(token)}`)
+        }}
+      />
+    </>
   )
 }
 
@@ -141,6 +194,7 @@ function TerminalState() {
   const phase = useBeamStore((s) => s.phase)
   const error = useBeamStore((s) => s.error)
   const session = useBeamStore((s) => s.session)
+  const stats = useBeamStore((s) => s.stats)
   const expiresAt = session?.expiresAt ?? 0
   const remaining = useCountdown(expiresAt)
 
@@ -184,6 +238,14 @@ function TerminalState() {
       <p className="mt-1.5 text-sm text-muted-foreground">{config.body}</p>
       {phase === 'expired' && remaining > 0 && (
         <p className="tnum mt-2 text-xs text-muted-foreground">Expired {formatCountdown(remaining)} ago</p>
+      )}
+      {stats.filesTransferred > 0 && (
+        <div className="mx-auto mt-4 inline-flex items-center gap-2 rounded-full border border-border bg-background px-3.5 py-1.5 text-xs font-medium shadow-sm">
+          <Files className="h-3.5 w-3.5 text-primary" aria-hidden />
+          <span className="tnum">
+            {stats.filesTransferred} file{stats.filesTransferred === 1 ? '' : 's'} · {formatBytes(stats.totalData)} moved
+          </span>
+        </div>
       )}
       <div className="mt-6 flex flex-col items-center justify-center gap-2.5 sm:flex-row">
         {keepFiles ? (

@@ -114,7 +114,7 @@ export function HistoryView() {
             {entries.map((entry) => (
               <li
                 key={entry.id}
-                className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 shadow-sm"
+                className="flex animate-row-in items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 shadow-sm transition-colors duration-150 hover:border-primary/30 hover:bg-accent/40"
               >
                 <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
                   <FileTypeIcon type="" name={entry.name} className="h-4.5 w-4.5" />

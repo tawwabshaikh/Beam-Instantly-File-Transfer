@@ -124,6 +124,8 @@ export function DropzoneCard() {
       }}
       onDrop={(e) => {
         e.preventDefault()
+        e.stopPropagation() // GlobalDropOverlay already handles page-level drops
+        window.dispatchEvent(new CustomEvent('beam:drop-complete')) // let the overlay reset
         dragDepth.current = 0
         setDragging(false)
         onPick(e.dataTransfer.files)
@@ -227,6 +229,8 @@ export function FilesCard({ compact = false }: { compact?: boolean }) {
       }}
       onDrop={(e) => {
         e.preventDefault()
+        e.stopPropagation() // GlobalDropOverlay already handles page-level drops
+        window.dispatchEvent(new CustomEvent('beam:drop-complete')) // let the overlay reset
         dragDepth.current = 0
         setDragging(false)
         if (e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files)

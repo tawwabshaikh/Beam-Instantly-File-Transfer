@@ -22,6 +22,7 @@ import { genId, isBlockedType, makePreviewUrl, validateFiles } from './files'
 import { getDeviceInfo, describeDevice } from './device'
 import { recordHistory } from './history'
 import { playChime } from './chime'
+import { clearSaveFolder, getSaveFolderName, pickSaveFolder, saveBlobToFolder, supportsSaveToFolder } from './save-target'
 import * as api from './api'
 
 /* ------------------------------------------------------------------ */
@@ -109,6 +110,8 @@ export interface BeamState {
   peerDevice: DeviceInfo | null
   connectedAt: number | null
   stats: { filesTransferred: number; totalData: number }
+  /** Name of the folder received files are written into (File System Access API), or null. */
+  saveFolder: string | null
 }
 
 interface BeamActions {
@@ -128,6 +131,8 @@ interface BeamActions {
   saveReceived(id: string): void
   shareReceived(id: string): Promise<void>
   dismissReceived(id: string): void
+  chooseSaveFolder(): Promise<void>
+  clearSaveFolder(): void
   sendNote(text: string): void
   extendSession(): void
   retryTransfer(transferId: string): void
@@ -313,7 +318,14 @@ function handleDone(transferId: string): void {
     receivedAt: Date.now(),
   }
 
+  // Guest phones auto-download; desktops collect files in "Incoming files".
   if (state.role === 'guest') triggerDownload(url, sink.meta.name)
+  // Best-effort haptic tick on mobile when a transfer lands.
+  try {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') navigator.vibrate([25, 40, 60])
+  } catch {
+    /* not supported */
+  }
 
   useBeamStore.setState((s) => ({
     transfers: {
@@ -1076,6 +1088,7 @@ const initialState: BeamState = {
   received: [],
   notes: [],
   mode: 'none',
+  saveFolder: null,
   peerDevice: null,
   connectedAt: null,
   stats: { filesTransferred: 0, totalData: 0 },
@@ -1359,9 +1372,38 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
 
   /* ---------------- shared ---------------- */
 
+  async chooseSaveFolder() {
+    if (!supportsSaveToFolder()) {
+      notify('info', 'Not supported in this browser', 'Saving straight into a folder needs a Chromium browser. Regular downloads still work.')
+      return
+    }
+    const name = await pickSaveFolder()
+    if (name) {
+      set({ saveFolder: name })
+      notify('success', 'Folder selected', `Received files are saved straight into “${name}”.`)
+    }
+  },
+
+  clearSaveFolder() {
+    clearSaveFolder()
+    set({ saveFolder: null })
+  },
+
   saveReceived(id: string) {
     const file = get().received.find((r) => r.id === id)
     if (!file) return
+    const folder = getSaveFolderName()
+    if (folder) {
+      void fetch(file.url)
+        .then((r) => r.blob())
+        .then((blob) => saveBlobToFolder(blob, file.name))
+        .then(() => notify('success', 'Saved to folder', `${file.name} → ${folder}`))
+        .catch(() => {
+          triggerDownload(file.url, file.name)
+          notify('info', 'Saved to downloads instead', `Couldn’t write into “${folder}” — check its permissions.`)
+        })
+      return
+    }
     triggerDownload(file.url, file.name)
     notify('success', 'Saved', `${file.name} was saved to your downloads.`)
   },
@@ -1467,6 +1509,6 @@ if (typeof window !== 'undefined') {
     store: useBeamStore, // QA only: full zustand API (setState, subscribe, …)
     debug: beamDebug,
     storeId: Math.random().toString(36).slice(2, 8),
-    version: 5,
+    version: 6,
   }
 }

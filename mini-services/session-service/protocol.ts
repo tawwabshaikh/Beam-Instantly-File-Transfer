@@ -165,6 +165,16 @@ export const LIMITS = {
 /** A session can be extended only within this window before expiry. */
 export const EXTEND_WINDOW_MS = 5 * 60_000
 
+/**
+ * Extend window scales down for short TTLs: at most 5 minutes, but never
+ * more than a third of the session length (so TTL=1 min sessions are
+ * extendable almost immediately instead of never). Mirrors the client.
+ */
+export function extendWindowFor(ttlMs: number): number {
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return EXTEND_WINDOW_MS
+  return Math.max(5_000, Math.min(EXTEND_WINDOW_MS, Math.floor(ttlMs / 3)))
+}
+
 /** Extensions we refuse to transfer (executables / scripts). */
 export const BLOCKED_EXTENSIONS = [
   'exe', 'msi', 'bat', 'cmd', 'com', 'scr', 'cpl', 'ps1', 'vbs', 'jar',

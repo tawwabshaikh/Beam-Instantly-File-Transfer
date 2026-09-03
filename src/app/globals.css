@@ -269,6 +269,30 @@
   mask-image: radial-gradient(ellipse 75% 65% at 50% 0%, black 35%, transparent 78%);
 }
 
+/* QR / scanner — sweeping scan line */
+@keyframes beam-scan {
+  0% {
+    top: 5%;
+    opacity: 0;
+  }
+  14% {
+    opacity: 1;
+  }
+  50% {
+    top: 92%;
+  }
+  86% {
+    opacity: 1;
+  }
+  100% {
+    top: 5%;
+    opacity: 0;
+  }
+}
+.beam-scan-line {
+  animation: beam-scan 3s ease-in-out infinite;
+}
+
 /* Hero keyword — shimmering gradient text with a drawn-in underline */
 @keyframes beam-shimmer-text {
   from {
@@ -323,8 +347,12 @@
   .hero-shimmer,
   .hero-shimmer::after,
   .animate-beam-ping,
+  .beam-scan-line,
   .progress-shine::after {
     animation: none;
+  }
+  .beam-scan-line {
+    opacity: 0;
   }
   .hero-shimmer {
     background-image: none;

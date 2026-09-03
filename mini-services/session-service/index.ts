@@ -24,7 +24,7 @@ import {
   validateFileManifest,
   type SessionRecord,
 } from './sessions'
-import { LIMITS, EXTEND_WINDOW_MS, type BeamErrorCode, type DeviceInfo, type Role } from './protocol'
+import { LIMITS, extendWindowFor, type BeamErrorCode, type DeviceInfo, type Role } from './protocol'
 
 const PORT = 3003 // hardcoded per architecture (Caddy gateway rule)
 
@@ -798,13 +798,19 @@ function handleBeamExtend(socket: Socket, payload: unknown): void {
   if (!session || session.status === 'ended') return
   const now = Date.now()
   if (now >= session.expiresAt) return
-  if (session.expiresAt - now > EXTEND_WINDOW_MS) {
-    socket.emit('beam:extend:declined', { code, message: 'Sessions can be extended in the last 5 minutes' })
+  // Window scales with TTL: at most 5 min, never more than a third of the session.
+  const windowMs = extendWindowFor(session.ttlMs)
+  if (session.expiresAt - now > windowMs) {
+    const hint =
+      windowMs >= 60_000
+        ? `the last ${Math.round(windowMs / 60_000)} minute${windowMs >= 120_000 ? 's' : ''}`
+        : `the last ${Math.max(5, Math.round(windowMs / 1000))} seconds`
+    socket.emit('beam:extend:declined', { code, message: `Sessions can be extended during ${hint}` })
     return
   }
   session.expiresAt = now + session.ttlMs
   io.to(code).emit('beam:extended', { code, expiresAt: session.expiresAt })
-  console.log(`[beam] session extended code=${code} ttl=${Math.round(session.ttlMs / 60000)}m`)
+  console.log(`[beam] session extended code=${code} ttl=${Math.round(session.ttlMs / 60000)}m window=${Math.round(windowMs / 1000)}s`)
 }
 
 // ---------------------------------------------------------------------------

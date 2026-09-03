@@ -88,7 +88,8 @@ Server → client:
 - `beam:error` codes: `NOT_FOUND | EXPIRED | ENDED | INVALID_TOKEN | ROLE_TAKEN | RATE_LIMITED | BAD_REQUEST`.
   Join rate limit: **20 joins / min / IP**.
 - Extend window: a host may reset `expiresAt` to `now + ttl` only when the
-  session is within its **last 5 minutes** (`EXTEND_WINDOW_MS`); earlier attempts
+  session is inside its extend window — `min(EXTEND_WINDOW_MS, ttl/3)` (5 min
+  cap, scaled down for short TTLs via `extendWindowFor`); earlier attempts
   get `beam:extend:declined`, guest attempts are ignored.
 - Notes: whitespace/control chars stripped, capped at `LIMITS.MAX_NOTE_CHARS`
   (20 000); empty/oversized notes are silently dropped; if the peer socket is
