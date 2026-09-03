@@ -26,7 +26,11 @@ export function LandingSections({ onStart }: { onStart: () => void }) {
 function Hero({ onStart }: { onStart: () => void }) {
   return (
     <section className="relative overflow-hidden">
-      {/* Soft radial accents — restrained, monochrome-green */}
+      {/* Soft radial accents + dot grid — restrained, monochrome-green */}
+      <div
+        aria-hidden
+        className="dot-grid pointer-events-none absolute inset-0"
+      />
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_60%_50%_at_50%_-10%,--theme(--color-primary/8%),transparent)]"

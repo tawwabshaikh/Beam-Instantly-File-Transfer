@@ -178,7 +178,9 @@ export function TransferRowItem({ row }: { row: TransferRow }) {
             </span>
           </div>
           <div className="mt-1.5 flex items-center gap-2">
-            <Progress value={pct} className="h-1.5 flex-1" aria-label={`Transfer progress ${pct.toFixed(0)}%`} />
+            <div className={cn('flex-1', row.status === 'active' && 'progress-shine rounded-full')}>
+              <Progress value={pct} className="h-1.5" aria-label={`Transfer progress ${pct.toFixed(0)}%`} />
+            </div>
             <span className="tnum w-10 shrink-0 text-right text-xs font-medium">{pct.toFixed(0)}%</span>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">

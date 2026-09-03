@@ -110,3 +110,25 @@ Stage Summary:
 - Phone → Upload → Desktop: WORKING (browser-verified).
 - WebRTC path: same orchestration; in this sandbox headless env P2P can't connect (no UDP) so the automatic relay fallback covers it — on real networks with STUN/TURN env vars set, P2P engages first (code path shares request/start/chunk/done handlers; only the byte pipe differs).
 - Remaining polish ideas for next iterations: subtle dropzone drag animations, skeleton loaders, PWA manifest, per-transfer retry on phone upload errors, sound/haptic cues, i18n.
+
+---
+Task ID: cron-review-1 (2026-09-04 ~02:00 IST)
+Agent: main (orchestrator)
+Task: QA sweep → critical relay flow-control bugfix → new features + styling details
+
+Work Log (status → fix → features):
+- STATUS: services healthy (:3000 dev, :3003 service via Caddy :81). QA smoke test passed (session→join→download, 0 console errors). Prior session logs showed a real user pair-up (4J3QZ3).
+- CRITICAL BUG FIXED (relay flow control): sender's window counter over-counted when acks arrived before a waiter was registered (localhost bursts) → acks "lost" → 30s 'Transfer stalled' on multi-chunk files (>1 chunk = >128KB always failed beyond chunk 0; single-chunk files worked, which masked it). Fix: per-transfer TRUE unacked counter (relayInflight Map) decremented by EVERY ack + predicate-based waiters (waitRelayBelow(tid, threshold)); window-wait uses threshold=WINDOW, drain uses threshold=1. First attempt caused a microtask spin (immediate-resolve + wrong threshold) — caught by E2E within minutes, fixed with predicate re-check loop. Verified: E2E green + browser 2.2MB/17-chunk download done + 4-file batch (2.58GB total bytes verified, all done).
+- SERVICE: fail-fast — relayToPeer=false now emits beam:transfer:error 'Other device disconnected' to sender (chunks/acks/start) instead of silent drop→stall. Debug logging added then removed (kept out of final).
+- FEATURE: PWA — generated Beam icon (image-generation skill), sharp-resized icon set (192/512/512-maskable/apple-touch/favicon-32/48), public/manifest.webmanifest, layout metadata (manifest, appleWebApp, themeColor emerald).
+- FEATURE: Download All aggregate batch progress bar on phone ('Downloading 3 of 4 · 1.9 MB / 2.5 MB') — verified live.
+- FEATURE: WebAudio completion chime (chime.ts, gesture-primed, best-effort) on transfer done (send+receive); 'Phone connected' toast with device name on desktop.
+- FEATURE: session-ending warning now at <2min (both QR card variants + phone header chip) with 'ending soon' guidance when paired.
+- STYLING: QR scan-frame corner brackets (primary-emerald) around QR; animated progress-shine sweep on active transfer rows; dropzone drag glow (ring shadow + icon bounce + scale); hero dot-grid backdrop with radial mask.
+- ENGINE QA instrumentation: window.__beam.debug {chunksHandled, noteProgressCalls, flushes, storeWrites} + storeId + version=2 (kept for future QA rounds).
+- Environment notes: bun --hot in mini-service did NOT reload on file edits (2 edits missed) — restarted manually; keep in mind for future rounds (restart service after editing mini-services/session-service). agent-browser quirks: after close --all the fresh tab can reset to about:blank — re-navigating the existing tab is more reliable; only one heavy tab pair at a time (4GB RAM box, next-server holds ~1.5GB).
+
+Stage Summary:
+- Multi-chunk relay transfers now WORK end-to-end (previously >128KB always stalled) — this was the most important fix so far; P2P WebRTC path unaffected.
+- All green: app lint+tsc clean, service tsc clean, E2E test green, browser batch verified.
+- Next-round ideas (priority): drag-reorder selected files (dnd-kit), per-transfer retry button on phone for p2d errors (host side works), transfer speed sparkline, i18n skeleton, sound mute toggle, e2e for disconnect fail-fast path, consider chunk-size negotiation for WebRTC (16KB→64KB when both Chromium), scan-my-QR accessibility label test.

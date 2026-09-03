@@ -112,9 +112,9 @@ export function DropzoneCard() {
         onPick(e.dataTransfer.files)
       }}
       className={cn(
-        'group relative flex min-h-[300px] cursor-pointer flex-col items-center justify-center rounded-3xl border-2 border-dashed p-8 text-center transition-all focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:min-h-[340px]',
+        'group relative flex min-h-[300px] cursor-pointer flex-col items-center justify-center rounded-3xl border-2 border-dashed p-8 text-center transition-all duration-200 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring',
         dragging
-          ? 'border-primary bg-primary/5 scale-[1.01]'
+          ? 'scale-[1.01] border-primary bg-primary/5 shadow-[0_0_0_6px_--theme(--color-primary/10%),0_12px_40px_-12px_--theme(--color-primary/35%)]'
           : 'border-border bg-card hover:border-primary/50 hover:bg-accent/40',
       )}
     >
@@ -132,11 +132,13 @@ export function DropzoneCard() {
       />
       <span
         className={cn(
-          'flex h-16 w-16 items-center justify-center rounded-2xl transition-colors',
-          dragging ? 'bg-primary text-primary-foreground' : 'bg-primary/10 text-primary',
+          'flex h-16 w-16 items-center justify-center rounded-2xl transition-all duration-300',
+          dragging
+            ? 'scale-110 bg-primary text-primary-foreground shadow-lg shadow-primary/30'
+            : 'bg-primary/10 text-primary group-hover:scale-105',
         )}
       >
-        <UploadCloud className="h-8 w-8" aria-hidden />
+        <UploadCloud className={cn('h-8 w-8 transition-transform', dragging && 'animate-bounce')} aria-hidden />
       </span>
       <p className="mt-5 text-lg font-medium">Drop files here</p>
       <p className="mt-1 text-sm text-muted-foreground">

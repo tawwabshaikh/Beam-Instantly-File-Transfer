@@ -677,11 +677,13 @@ function handleTransferStart(socket: Socket, payload: unknown): void {
   const size = file.size
   if (typeof size !== 'number' || !Number.isFinite(size) || size < 0 || size > LIMITS.MAX_FILE_BYTES) return
   if (file.id !== undefined && (typeof file.id !== 'string' || file.id.length > 64)) return
-  relayToPeer(socket, 'beam:transfer:start', { code, transferId, file, direction: payload.direction })
+  const ok = relayToPeer(socket, 'beam:transfer:start', { code, transferId, file, direction: payload.direction })
+  if (!ok) {
+    socket.emit('beam:transfer:error', { code, transferId, message: 'Other device disconnected — reconnect and retry' })
+  }
 }
 
 function handleTransferChunk(socket: Socket, payload: unknown): void {
-  // NOTE: chunks are intentionally never logged (no spam).
   const ctx = socketSessions.get(socket.id)
   if (!ctx || !isRecord(payload)) return
   const code = normCode(payload.code)
@@ -701,7 +703,11 @@ function handleTransferChunk(socket: Socket, payload: unknown): void {
     socket.emit('beam:transfer:error', { code, transferId, message: 'Rate limited' })
     return
   }
-  relayToPeer(socket, 'beam:transfer:chunk', { code, transferId, seq: payload.seq, data })
+  const ok = relayToPeer(socket, 'beam:transfer:chunk', { code, transferId, seq: payload.seq, data })
+  if (!ok) {
+    // Peer is gone — fail fast instead of letting the sender stall on acks.
+    socket.emit('beam:transfer:error', { code, transferId, message: 'Other device disconnected — reconnect and retry' })
+  }
 }
 
 function handleTransferAck(socket: Socket, payload: unknown): void {
@@ -711,7 +717,10 @@ function handleTransferAck(socket: Socket, payload: unknown): void {
   if (!code || code !== ctx.code) return
   const transferId = validTransferId(payload.transferId)
   if (!transferId || !validSeq(payload.seq)) return
-  relayToPeer(socket, 'beam:transfer:ack', { code, transferId, seq: payload.seq })
+  const ok = relayToPeer(socket, 'beam:transfer:ack', { code, transferId, seq: payload.seq })
+  if (!ok) {
+    socket.emit('beam:transfer:error', { code, transferId, message: 'Other device disconnected — reconnect and retry' })
+  }
 }
 
 function handleTransferDone(socket: Socket, payload: unknown): void {

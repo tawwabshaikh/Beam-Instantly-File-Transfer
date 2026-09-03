@@ -19,7 +19,20 @@ export const metadata: Metadata = {
   description:
     "Move files between your desktop and phone with one QR scan. No cables, no apps, no shared Wi-Fi required. Secure, encrypted, temporary sessions.",
   keywords: ["file transfer", "QR code", "WebRTC", "send files", "phone to PC", "cross-platform"],
-  icons: { icon: "/logo.svg" },
+  applicationName: "Beam",
+  manifest: "/manifest.webmanifest",
+  icons: {
+    icon: [
+      { url: "/favicon-32.png", sizes: "32x32", type: "image/png" },
+      { url: "/favicon-48.png", sizes: "48x48", type: "image/png" },
+    ],
+    apple: "/apple-touch-icon.png",
+  },
+  appleWebApp: {
+    capable: true,
+    title: "Beam",
+    statusBarStyle: "default",
+  },
   openGraph: {
     title: "Beam — Move files between devices. Instantly.",
     description: "Scan once. Transfer securely. No cables. No apps. No shared Wi-Fi required.",
@@ -32,7 +45,7 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: light)", color: "#059669" },
     { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
   ],
 };

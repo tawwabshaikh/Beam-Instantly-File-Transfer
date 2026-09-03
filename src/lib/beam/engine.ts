@@ -19,8 +19,9 @@ import {
   waitUntilOpen,
 } from './webrtc'
 import { genId, isBlockedType, makePreviewUrl, validateFiles } from './files'
-import { getDeviceInfo } from './device'
+import { getDeviceInfo, describeDevice } from './device'
 import { recordHistory } from './history'
+import { playChime } from './chime'
 import * as api from './api'
 
 /* ------------------------------------------------------------------ */
@@ -142,10 +143,19 @@ const sinks = new Map<
   { parts: ArrayBuffer[]; received: number; meta: FileMeta; direction: TransferDirection }
 >()
 const ackWaiters = new Map<string, Array<{ resolve: () => void; timer: ReturnType<typeof setTimeout> }>>()
+const relayInflight = new Map<string, number>() // transferId → true unacked-chunk count
 const samples = new Map<string, { t: number; b: number }[]>()
 const lastSpeed = new Map<string, number>()
 const flushTimes = new Map<string, number>()
 const canceledIds = new Set<string>()
+
+/** QA instrumentation (read via window.__beam.debug). */
+const beamDebug = {
+  chunksHandled: 0,
+  noteProgressCalls: 0,
+  flushes: 0,
+  storeWrites: 0,
+}
 
 let sendQueue: { transferId: string; fileId: string }[] = []
 let sendActive = false
@@ -171,6 +181,7 @@ function patchTransfer(id: string, patch: Partial<TransferRow>): void {
   useBeamStore.setState((state) => {
     const row = state.transfers[id]
     if (!row) return state
+    beamDebug.storeWrites++
     return { transfers: { ...state.transfers, [id]: { ...row, ...patch } } }
   })
 }
@@ -182,6 +193,7 @@ function upsertRow(id: string, row: TransferRow): void {
 }
 
 function noteProgress(id: string, transferred: number, size: number): void {
+  beamDebug.noteProgressCalls++
   const now = Date.now()
   const arr = samples.get(id) ?? []
   arr.push({ t: now, b: transferred })
@@ -198,8 +210,9 @@ function noteProgress(id: string, transferred: number, size: number): void {
   }
 
   const lastFlush = flushTimes.get(id) ?? 0
-  if (now - lastFlush >= 250) {
+  if (now - lastFlush >= 120) {
     flushTimes.set(id, now)
+    beamDebug.flushes++
     patchTransfer(id, {
       transferred,
       speed,
@@ -245,6 +258,7 @@ function handleStart(transferId: string, file: FileMeta, direction: TransferDire
 }
 
 function handleChunk(transferId: string, data: ArrayBuffer): void {
+  beamDebug.chunksHandled++
   const sink = sinks.get(transferId)
   if (!sink || canceledIds.has(transferId)) return
   sink.parts.push(data)
@@ -306,12 +320,14 @@ function handleDone(transferId: string): void {
     state.role === 'guest' ? 'Download completed' : 'File received',
     sink.meta.name,
   )
+  playChime()
   pumpSend()
 }
 
 function handleTransferError(transferId: string, message: string): void {
   sinks.delete(transferId)
   ackWaiters.delete(transferId)
+  relayInflight.delete(transferId)
   canceledIds.delete(transferId)
   patchTransfer(transferId, { status: 'error', error: message, speed: 0 })
   notify('error', 'Transfer failed', message)
@@ -329,6 +345,7 @@ function handleCancel(transferId: string): void {
   canceledIds.add(transferId)
   sinks.delete(transferId)
   ackWaiters.delete(transferId)
+  relayInflight.delete(transferId)
   patchTransfer(transferId, { status: 'canceled', speed: 0 })
   pumpSend()
 }
@@ -425,6 +442,7 @@ function finishSend(transferId: string, file: File, meta: FileMeta): void {
     status: 'completed',
     sessionCode: state.session?.code ?? '',
   })
+  playChime()
   notify('success', 'Transfer completed', file.name)
 }
 
@@ -457,32 +475,41 @@ async function sendOverRelay(transferId: string, file: File, meta: FileMeta): Pr
   emitCode('beam:transfer:start', { transferId, file: meta, direction: useBeamStore.getState().role === 'host' ? 'd2p' : 'p2d' })
 
   const CHUNK = LIMITS.CHUNK_SIZE_RELAY
-  let inflight = 0
   let offset = 0
+  relayInflight.set(transferId, 0)
 
   while (offset < file.size) {
     if (canceledIds.has(transferId)) throw new CancelledError()
     if (!socket || !socket.connected) throw new Error('Connection lost during transfer')
-    if (inflight >= LIMITS.RELAY_WINDOW) {
-      await waitRelayAck(transferId)
-      inflight--
+    if ((relayInflight.get(transferId) ?? 0) >= LIMITS.RELAY_WINDOW) {
+      await waitRelayBelow(transferId, LIMITS.RELAY_WINDOW)
     }
     const buf = await file.slice(offset, offset + CHUNK).arrayBuffer()
     emitCode('beam:transfer:chunk', { transferId, seq: offset / CHUNK, data: buf })
     offset += buf.byteLength
-    inflight++
+    relayInflight.set(transferId, (relayInflight.get(transferId) ?? 0) + 1)
     noteProgress(transferId, offset, file.size)
   }
 
-  // Drain remaining acks so the receiver has fully flushed before 'done'.
-  while (inflight > 0) {
-    await waitRelayAck(transferId)
-    inflight--
+  // Drain: wait until every sent chunk has been acknowledged. The unacked
+  // count is decremented by the ack handler even when no waiter is pending,
+  // so acks that arrived early are never "lost".
+  while ((relayInflight.get(transferId) ?? 0) > 0) {
+    await waitRelayBelow(transferId, 1)
   }
+  relayInflight.delete(transferId)
   emitCode('beam:transfer:done', { transferId })
 }
 
-function waitRelayAck(transferId: string): Promise<void> {
+/**
+ * Resolve when the unacked count drops below `threshold`. Each incoming ack
+ * wakes exactly one waiter; callers re-check their predicate after waking.
+ */
+function waitRelayBelow(transferId: string, threshold: number): Promise<void> {
+  // Predicate already satisfied (e.g. acks arrived before we started waiting)?
+  if ((relayInflight.get(transferId) ?? 0) < threshold) {
+    return Promise.resolve()
+  }
   return new Promise((resolve, reject) => {
     const entry = {
       resolve,
@@ -499,6 +526,11 @@ function waitRelayAck(transferId: string): Promise<void> {
 }
 
 function resolveAcks(transferId: string): void {
+  // Every ack decrements the true unacked count — even without a pending
+  // waiter — so early acks are never lost.
+  const cur = relayInflight.get(transferId)
+  if (cur !== undefined && cur > 0) relayInflight.set(transferId, cur - 1)
+
   const q = ackWaiters.get(transferId)
   const entry = q?.shift()
   if (entry) {
@@ -722,6 +754,7 @@ function ensureSocket(): Socket {
     if (data.event === 'joined') {
       useBeamStore.setState({ peerDevice: data.device })
       if (st.role === 'host') {
+        if (data.device) notify('success', 'Phone connected', `${describeDevice(data.device)} is ready to exchange files`)
         hostStartPeerConnection().catch(() => switchMode('relay'))
       } else if (st.phase === 'lost' || st.phase === 'failed') {
         useBeamStore.setState({ phase: 'connecting', error: null })
@@ -1233,6 +1266,8 @@ export function _getRuntimeSocket(): Socket | null {
 if (typeof window !== 'undefined') {
   ;(window as unknown as Record<string, unknown>).__beam = {
     getState: () => useBeamStore.getState(),
-    version: 1,
+    debug: beamDebug,
+    storeId: Math.random().toString(36).slice(2, 8),
+    version: 2,
   }
 }

@@ -21,6 +21,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Progress } from '@/components/ui/progress'
 import { useBeamStore, type TransferRow } from '@/lib/beam/engine'
 import { formatBytes, formatCountdown, formatSpeed } from '@/lib/beam/format'
 import { Logo } from '@/components/beam/logo'
@@ -97,7 +98,7 @@ function MobileHeader({ code, expiresAt }: { code: string; expiresAt: number }) 
             <span
               className={cn(
                 'tnum inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium',
-                remaining < 60_000 ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400' : 'bg-muted text-muted-foreground',
+                remaining < 120_000 ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400' : 'bg-muted text-muted-foreground',
               )}
             >
               <Timer className="h-3 w-3" aria-hidden />
@@ -249,6 +250,7 @@ function ConnectedView() {
 
         {d2pRows.length > 0 && (
           <div className="border-t border-border/70">
+            <BatchProgress rows={d2pRows} />
             <ul className="divide-y divide-border/60">
               {d2pRows
                 .sort((a, b) => (a.status === 'active' ? -1 : b.status === 'active' ? 1 : 0))
@@ -270,6 +272,32 @@ function ConnectedView() {
           Direct connection wasn’t possible — transfers are relaying through Beam’s secure server. Everything stays encrypted.
         </p>
       )}
+    </div>
+  )
+}
+
+/** Aggregate progress for a batch of downloads (e.g. "Download All"). */
+function BatchProgress({ rows }: { rows: TransferRow[] }) {
+  const relevant = rows.filter((r) => r.status !== 'canceled')
+  const total = relevant.reduce((a, r) => a + r.size, 0)
+  const done = relevant.reduce((a, r) => a + r.transferred, 0)
+  const active = relevant.filter((r) => r.status === 'active' || r.status === 'queued').length
+  const finished = relevant.filter((r) => r.status === 'done').length
+  const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0
+
+  if (relevant.length < 2) return null
+
+  return (
+    <div className="bg-muted/40 px-4 py-2.5">
+      <div className="flex items-center justify-between text-xs">
+        <span className="font-medium text-foreground">
+          {active > 0 ? `Downloading ${finished + 1} of ${relevant.length}` : `${finished} of ${relevant.length} downloaded`}
+        </span>
+        <span className="tnum text-muted-foreground">
+          {formatBytes(done)} / {formatBytes(total)}
+        </span>
+      </div>
+      <Progress value={pct} className="mt-1.5 h-1.5" aria-label={`Batch progress ${pct.toFixed(0)}%`} />
     </div>
   )
 }

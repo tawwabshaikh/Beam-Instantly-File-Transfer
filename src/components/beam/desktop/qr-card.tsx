@@ -51,7 +51,7 @@ export function QrCard({ variant }: { variant: 'full' | 'compact' }) {
   const joined = phase === 'connected'
   const connecting = phase === 'connecting'
 
-  const expiresSoon = remaining > 0 && remaining < 60_000
+  const expiresSoon = remaining > 0 && remaining < 120_000
 
   if (variant === 'compact') {
     return (
@@ -85,9 +85,11 @@ export function QrCard({ variant }: { variant: 'full' | 'compact' }) {
             </DialogContent>
           </Dialog>
         </div>
-        {expiresSoon && !joined && (
+        {expiresSoon && (
           <p className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-            Session is about to expire — renew soon to keep transfers going.
+            {joined
+              ? 'Session is ending soon — finishes current transfers, then create a fresh code for the next pair-up.'
+              : 'Session is about to expire — renew soon to keep transfers going.'}
           </p>
         )}
       </div>
@@ -197,6 +199,11 @@ function QrPanel({
   return (
     <div className="flex w-full flex-col items-center">
       <div className="relative rounded-2xl bg-white p-3 shadow-inner ring-1 ring-black/5">
+        {/* scan-frame corner brackets */}
+        <span aria-hidden className="pointer-events-none absolute -left-2 -top-2 h-7 w-7 rounded-tl-xl border-l-[3px] border-t-[3px] border-primary/70" />
+        <span aria-hidden className="pointer-events-none absolute -right-2 -top-2 h-7 w-7 rounded-tr-xl border-r-[3px] border-t-[3px] border-primary/70" />
+        <span aria-hidden className="pointer-events-none absolute -bottom-2 -left-2 h-7 w-7 rounded-bl-xl border-b-[3px] border-l-[3px] border-primary/70" />
+        <span aria-hidden className="pointer-events-none absolute -bottom-2 -right-2 h-7 w-7 rounded-br-xl border-b-[3px] border-r-[3px] border-primary/70" />
         {qr ? (
           <img
             src={qr}
