@@ -236,7 +236,8 @@ export function FilesCard({ compact = false }: { compact?: boolean }) {
       </ScrollArea>
       {locked && (
         <p className="border-t border-border/70 px-4 py-2 text-xs text-muted-foreground">
-          Files are locked while a device is connected.
+          File picker is locked while a device is paired — you can still{' '}
+          <span className="font-medium text-foreground">drag &amp; drop files here</span> and the phone sees them instantly.
         </p>
       )}
     </section>

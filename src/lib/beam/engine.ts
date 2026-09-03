@@ -794,7 +794,23 @@ function ensureSocket(): Socket {
 
   socket.on('beam:manifest', (data: { files: FileMeta[] }) => {
     if (useBeamStore.getState().role !== 'guest') return
-    if (Array.isArray(data?.files)) useBeamStore.setState({ manifest: data.files })
+    if (!Array.isArray(data?.files)) return
+    const prev = useBeamStore.getState().manifest
+    const prevIds = new Set(prev.map((f) => f.id))
+    const added = data.files.filter((f) => f && f.id && !prevIds.has(f.id))
+    useBeamStore.setState({ manifest: data.files })
+    if (added.length > 0 && useBeamStore.getState().phase === 'connected') {
+      notify(
+        'info',
+        added.length === 1 ? 'New file on desktop' : `${added.length} new files on desktop`,
+        added.length <= 3
+          ? added.map((f) => f.name).join(', ')
+          : `${added.slice(0, 3).map((f) => f.name).join(', ')} +${added.length - 3} more`,
+      )
+      window.dispatchEvent(
+        new CustomEvent('beam:manifest-update', { detail: { addedIds: added.map((f) => f.id) } }),
+      )
+    }
   })
 
   socket.on('beam:incoming', (data: { files: FileMeta[] }) => {
@@ -828,27 +844,74 @@ function ensureSocket(): Socket {
   socket.on('beam:transfer:request', (data: { transferId: string; fileId: string; direction: TransferDirection }) => {
     const st = useBeamStore.getState()
     if (!st.session || !data?.transferId || !data?.fileId) return
-    if (st.role === 'host' && data.direction !== 'd2p') return
-    if (st.role === 'guest' && data.direction !== 'p2d') return
-    const metaFile = st.role === 'host'
-      ? st.selectedFiles.find((f) => f.id === data.fileId)
-      : st.mobileFiles.find((f) => f.id === data.fileId)
-    upsertRow(data.transferId, {
-      id: data.transferId,
-      fileId: data.fileId,
-      name: metaFile?.name ?? 'File',
-      size: metaFile?.size ?? 0,
-      type: metaFile?.type ?? '',
-      direction: data.direction,
-      status: 'queued',
-      transferred: 0,
-      speed: 0,
-      etaSec: null,
-      startedAt: null,
-      error: null,
-      transport: null,
-    })
-    enqueueSend(data.transferId, data.fileId)
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(data.transferId) || !/^[A-Za-z0-9_-]{1,64}$/.test(data.fileId)) return
+
+    // Host: phone asks for a file we publish.
+    if (st.role === 'host' && data.direction === 'd2p') {
+      const metaFile = st.selectedFiles.find((f) => f.id === data.fileId)
+      if (!metaFile) return
+      upsertRow(data.transferId, {
+        id: data.transferId,
+        fileId: data.fileId,
+        name: metaFile.name,
+        size: metaFile.size,
+        type: metaFile.type,
+        direction: 'd2p',
+        status: 'queued',
+        transferred: 0,
+        speed: 0,
+        etaSec: null,
+        startedAt: null,
+        error: null,
+        transport: null,
+      })
+      enqueueSend(data.transferId, data.fileId)
+      return
+    }
+
+    // Host: phone re-requests to push one of its files (phone-side retry).
+    // The sender owns the bytes — real metadata arrives with beam:transfer:start.
+    if (st.role === 'host' && data.direction === 'p2d') {
+      const known = st.incomingFiles.find((f) => f.id === data.fileId)
+      upsertRow(data.transferId, {
+        id: data.transferId,
+        fileId: data.fileId,
+        name: known?.name ?? 'File',
+        size: known?.size ?? 0,
+        type: known?.type ?? '',
+        direction: 'p2d',
+        status: 'queued',
+        transferred: 0,
+        speed: 0,
+        etaSec: null,
+        startedAt: null,
+        error: null,
+        transport: null,
+      })
+      return
+    }
+
+    // Guest: desktop asks us to (re)send one of our files.
+    if (st.role === 'guest' && data.direction === 'p2d') {
+      const metaFile = st.mobileFiles.find((f) => f.id === data.fileId)
+      if (!metaFile) return
+      upsertRow(data.transferId, {
+        id: data.transferId,
+        fileId: data.fileId,
+        name: metaFile.name,
+        size: metaFile.size,
+        type: metaFile.type,
+        direction: 'p2d',
+        status: 'queued',
+        transferred: 0,
+        speed: 0,
+        etaSec: null,
+        startedAt: null,
+        error: null,
+        transport: null,
+      })
+      enqueueSend(data.transferId, data.fileId)
+    }
   })
 
   socket.on('beam:transfer:start', (data: { transferId: string; file: FileMeta; direction: TransferDirection }) => {
@@ -1232,12 +1295,21 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
 
   retryTransfer(transferId: string) {
     const row = get().transfers[transferId]
-    if (!row) return
+    if (!row || row.status === 'active') return
     const st = get()
+    if (row.direction === 'p2d' && !fileObjects.has(row.fileId)) {
+      notify('error', 'Cannot retry', `${row.name} is no longer selected on this device.`)
+      return
+    }
     const newId = genId()
     upsertRow(newId, { ...row, id: newId, status: 'queued', transferred: 0, speed: 0, etaSec: null, startedAt: null, error: null, transport: null })
     patchTransfer(transferId, { status: 'canceled' })
     emitCode('beam:transfer:request', { transferId: newId, fileId: row.fileId, direction: row.direction })
+    if (row.direction === 'p2d' && st.role === 'guest') {
+      // The request only queues a row on the desktop — we own the bytes,
+      // so start pushing locally as well.
+      enqueueSend(newId, row.fileId)
+    }
   },
 
   cancelTransfer(transferId: string) {
@@ -1262,12 +1334,13 @@ export function _getRuntimeSocket(): Socket | null {
   return socket
 }
 
-// Debug/testing hook — lets QA tooling inspect the live store (client-side only).
+// Debug/testing hook — lets QA tooling inspect (and drive) the live store.
 if (typeof window !== 'undefined') {
   ;(window as unknown as Record<string, unknown>).__beam = {
     getState: () => useBeamStore.getState(),
+    store: useBeamStore, // QA only: full zustand API (setState, subscribe, …)
     debug: beamDebug,
     storeId: Math.random().toString(36).slice(2, 8),
-    version: 2,
+    version: 3,
   }
 }

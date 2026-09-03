@@ -9,6 +9,34 @@
 let ctx: AudioContext | null = null
 let primed = false
 
+/* ---------------- mute preference (persisted) ---------------- */
+
+const MUTE_KEY = 'beam.sound.muted'
+let mutedCache: boolean | null = null
+
+/** True when the user muted Beam's sound effects. */
+export function isSoundMuted(): boolean {
+  if (mutedCache === null) {
+    try {
+      mutedCache = typeof window !== 'undefined' && window.localStorage.getItem(MUTE_KEY) === '1'
+    } catch {
+      mutedCache = false
+    }
+  }
+  return mutedCache
+}
+
+/** Persist the mute preference and notify listeners. */
+export function setSoundMuted(muted: boolean): void {
+  mutedCache = muted
+  try {
+    window.localStorage.setItem(MUTE_KEY, muted ? '1' : '0')
+  } catch {
+    // storage unavailable — in-memory only
+  }
+  window.dispatchEvent(new CustomEvent('beam:mute-change', { detail: { muted } }))
+}
+
 function ensureContext(): AudioContext | null {
   if (typeof window === 'undefined') return null
   try {
@@ -55,8 +83,9 @@ function tone(freq: number, startAt: number, duration: number, volume: number): 
   osc.stop(ctx.currentTime + startAt + duration + 0.05)
 }
 
-/** Pleasant two-note "done" chime. */
+/** Pleasant two-note "done" chime. Respects the persisted mute setting. */
 export function playChime(): void {
+  if (isSoundMuted()) return
   const c = ensureContext()
   if (!c || c.state !== 'running') return
   try {

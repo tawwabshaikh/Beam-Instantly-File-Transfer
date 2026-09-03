@@ -1,9 +1,10 @@
 'use client'
 
 import { useTheme } from 'next-themes'
-import { Moon, Sun } from 'lucide-react'
+import { Moon, Sun, Volume2, VolumeX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Logo } from '@/components/beam/logo'
+import { useSoundMuted } from '@/hooks/use-sound-muted'
 import { cn } from '@/lib/utils'
 
 export type DesktopNavView = 'transfer' | 'history' | 'about'
@@ -22,6 +23,7 @@ export function SiteHeader({
   onNavigate: (v: DesktopNavView) => void
 }) {
   const { resolvedTheme, setTheme } = useTheme()
+  const { muted, toggle: toggleMute } = useSoundMuted()
 
   return (
     <header className="sticky top-0 z-40 border-b border-border/60 bg-background/80 backdrop-blur-md">
@@ -53,6 +55,15 @@ export function SiteHeader({
             </button>
           ))}
           <span className="mx-1 hidden h-5 w-px bg-border sm:block" aria-hidden />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-9 w-9"
+            onClick={toggleMute}
+            aria-label={muted ? 'Turn transfer sounds on' : 'Turn transfer sounds off'}
+          >
+            {muted ? <VolumeX className="h-4 w-4" aria-hidden /> : <Volume2 className="h-4 w-4" aria-hidden />}
+          </Button>
           <Button
             variant="ghost"
             size="icon"

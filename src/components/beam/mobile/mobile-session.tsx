@@ -17,6 +17,8 @@ import {
   Share2,
   ShieldCheck,
   Timer,
+  Volume2,
+  VolumeX,
   X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -28,6 +30,7 @@ import { Logo } from '@/components/beam/logo'
 import { FileTypeIcon } from '@/components/beam/desktop/dropzone'
 import { TransferRowItem } from '@/components/beam/desktop/session-panel'
 import { useCountdown } from '@/hooks/use-countdown'
+import { useSoundMuted } from '@/hooks/use-sound-muted'
 import { cn } from '@/lib/utils'
 
 /**
@@ -79,6 +82,7 @@ export function MobileSession({ code, token }: { code: string; token: string }) 
 
 function MobileHeader({ code, expiresAt }: { code: string; expiresAt: number }) {
   const remaining = useCountdown(expiresAt)
+  const { muted, toggle } = useSoundMuted()
 
   useEffect(() => {
     if (!expiresAt) return
@@ -90,7 +94,7 @@ function MobileHeader({ code, expiresAt }: { code: string; expiresAt: number }) 
     <header className="sticky top-0 z-40 border-b border-border/60 bg-background/85 backdrop-blur-md">
       <div className="mx-auto flex h-12 w-full max-w-md items-center justify-between px-4">
         <Logo size="sm" />
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <code className="tnum rounded-md border border-border bg-muted px-2 py-1 text-xs font-semibold tracking-[0.15em]">
             {code}
           </code>
@@ -105,6 +109,15 @@ function MobileHeader({ code, expiresAt }: { code: string; expiresAt: number }) 
               {formatCountdown(remaining)}
             </span>
           )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-muted-foreground"
+            onClick={toggle}
+            aria-label={muted ? 'Turn sound on' : 'Turn sound off'}
+          >
+            {muted ? <VolumeX className="h-4 w-4" aria-hidden /> : <Volume2 className="h-4 w-4" aria-hidden />}
+          </Button>
         </div>
       </div>
     </header>
@@ -173,6 +186,24 @@ function ConnectedView() {
   const manifest = useBeamStore((s) => s.manifest)
   const mode = useBeamStore((s) => s.mode)
   const transfers = useBeamStore((s) => s.transfers)
+  const [flashIds, setFlashIds] = useState<string[]>([])
+
+  // Highlight rows the desktop added mid-session (engine emits this event)
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const onManifestUpdate = (e: Event) => {
+      const ids = (e as CustomEvent<{ addedIds: string[] }>).detail?.addedIds ?? []
+      if (ids.length === 0) return
+      setFlashIds(ids)
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => setFlashIds([]), 2400)
+    }
+    window.addEventListener('beam:manifest-update', onManifestUpdate)
+    return () => {
+      window.removeEventListener('beam:manifest-update', onManifestUpdate)
+      if (timer) clearTimeout(timer)
+    }
+  }, [])
 
   const d2pRows = useMemo(
     () => Object.values(transfers).filter((t) => t.direction === 'd2p'),
@@ -218,7 +249,10 @@ function ConnectedView() {
             <ArrowDownToLine className="h-4 w-4 text-primary" aria-hidden />
             From desktop
             {manifest.length > 0 && (
-              <span className="tnum rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+              <span
+                key={manifest.length}
+                className="tnum animate-pop rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+              >
                 {manifest.length}
               </span>
             )}
@@ -243,7 +277,7 @@ function ConnectedView() {
         ) : (
           <ul className="beam-scroll max-h-[46vh] divide-y divide-border/60 overflow-y-auto">
             {manifest.map((file) => (
-              <MobileFileRow key={file.id} fileId={file.id} />
+              <MobileFileRow key={file.id} fileId={file.id} flash={flashIds.includes(file.id)} />
             ))}
           </ul>
         )}
@@ -302,11 +336,12 @@ function BatchProgress({ rows }: { rows: TransferRow[] }) {
   )
 }
 
-function MobileFileRow({ fileId }: { fileId: string }) {
+function MobileFileRow({ fileId, flash = false }: { fileId: string; flash?: boolean }) {
   const file = useBeamStore((s) => s.manifest.find((f) => f.id === fileId))
   const transfers = useBeamStore((s) => s.transfers)
   const requestDownload = useBeamStore((s) => s.requestDownload)
   const shareReceived = useBeamStore((s) => s.shareReceived)
+  const retryTransfer = useBeamStore((s) => s.retryTransfer)
 
   const rows = useMemo(
     () =>
@@ -317,10 +352,11 @@ function MobileFileRow({ fileId }: { fileId: string }) {
   if (!file) return null
   const row = rows[rows.length - 1]
   const busy = row && (row.status === 'queued' || row.status === 'active')
+  const failed = row?.status === 'error'
   const done = rows.some((r) => r.status === 'done')
 
   return (
-    <li className="flex items-center gap-3 px-4 py-3">
+    <li className={cn('flex items-center gap-3 px-4 py-3 transition-colors', flash && 'animate-flash')}>
       <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
         <FileTypeIcon type={file.type} name={file.name} className="h-4.5 w-4.5" />
       </span>
@@ -328,10 +364,12 @@ function MobileFileRow({ fileId }: { fileId: string }) {
         <p className="truncate text-sm font-medium" title={file.name}>
           {file.name}
         </p>
-        <p className="tnum text-xs text-muted-foreground">
+        <p className={cn('tnum truncate text-xs', failed ? 'text-destructive' : 'text-muted-foreground')}>
           {row?.status === 'active'
             ? `${(row.size > 0 ? (row.transferred / row.size) * 100 : 0).toFixed(0)}% · ${formatSpeed(row.speed)}`
-            : formatBytes(file.size)}
+            : failed
+              ? (row?.error ?? 'Download failed')
+              : formatBytes(file.size)}
         </p>
       </div>
       {done ? (
@@ -353,6 +391,16 @@ function MobileFileRow({ fileId }: { fileId: string }) {
             Saved
           </span>
         </div>
+      ) : failed ? (
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-9 min-w-20 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+          onClick={() => retryTransfer(row!.id)}
+        >
+          <RotateCcw className="h-4 w-4" aria-hidden />
+          Retry
+        </Button>
       ) : (
         <Button size="sm" className="h-9 min-w-24" onClick={() => requestDownload(fileId)} disabled={busy}>
           {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Download className="h-4 w-4" aria-hidden />}
@@ -374,6 +422,7 @@ function SendToDesktop({
 }) {
   const addMobileFiles = useBeamStore((s) => s.addMobileFiles)
   const removeMobileFile = useBeamStore((s) => s.removeMobileFile)
+  const retryTransfer = useBeamStore((s) => s.retryTransfer)
   const mobileFiles = useBeamStore((s) => s.mobileFiles)
   const pickRef = useRef<HTMLInputElement>(null)
   const cameraRef = useRef<HTMLInputElement>(null)
@@ -451,7 +500,15 @@ function SendToDesktop({
                 {row?.status === 'done' ? (
                   <CheckCircle2 className="h-5 w-5 shrink-0 text-primary" aria-label="Upload completed" />
                 ) : row?.status === 'error' ? (
-                  <RotateCcw className="h-4 w-4 shrink-0 text-destructive" aria-label="Upload failed — retry from desktop not available, reselect file" />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 shrink-0 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    onClick={() => retryTransfer(row.id)}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" aria-hidden />
+                    Retry
+                  </Button>
                 ) : (
                   <Button
                     variant="ghost"

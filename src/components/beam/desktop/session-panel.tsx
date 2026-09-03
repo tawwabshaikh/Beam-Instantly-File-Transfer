@@ -13,6 +13,7 @@ import {
   FolderOpen,
   HardDrive,
   Loader2,
+  RotateCcw,
   Timer,
   X,
 } from 'lucide-react'
@@ -22,6 +23,7 @@ import { useBeamStore, type TransferRow } from '@/lib/beam/engine'
 import { formatBytes, formatDuration, formatSpeed } from '@/lib/beam/format'
 import { describeDevice } from '@/lib/beam/device'
 import { FileTypeIcon } from '@/components/beam/desktop/dropzone'
+import { SpeedSparkline } from '@/components/beam/speed-sparkline'
 import { cn } from '@/lib/utils'
 
 /* ------------------------------------------------------------------ */
@@ -120,12 +122,19 @@ export function TransfersList() {
     const rank = (r: TransferRow) => (r.status === 'active' ? 0 : r.status === 'queued' ? 1 : r.status === 'error' ? 2 : 3)
     return rank(a) - rank(b)
   })
+  const aggregateSpeed = rows.reduce((a, r) => a + (r.status === 'active' ? r.speed : 0), 0)
 
   if (rows.length === 0) {
     return (
-      <section className="rounded-2xl border border-dashed border-border bg-card/50 p-6 text-center">
-        <p className="text-sm font-medium">No transfers yet</p>
-        <p className="mt-1 text-xs text-muted-foreground">
+      <section className="rounded-2xl border border-dashed border-border bg-card/50 p-8 text-center">
+        <span
+          aria-hidden
+          className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-muted text-muted-foreground/70"
+        >
+          <Files className="h-5 w-5" />
+        </span>
+        <p className="mt-3 text-sm font-medium">No transfers yet</p>
+        <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
           {incomingFiles.length > 0
             ? 'Receiving files from the phone…'
             : 'Files you select are ready for the phone to download. The phone can also send files back — they’ll appear here.'}
@@ -136,8 +145,22 @@ export function TransfersList() {
 
   return (
     <section aria-label="Transfers" className="rounded-2xl border border-border bg-card shadow-sm">
-      <header className="border-b border-border/70 px-4 py-3">
-        <h2 className="text-sm font-semibold">Transfers</h2>
+      <header className="flex items-center justify-between gap-3 border-b border-border/70 px-4 py-3">
+        <h2 className="flex items-center gap-2 text-sm font-semibold">
+          Transfers
+          <span className="tnum rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+            {rows.length}
+          </span>
+        </h2>
+        {aggregateSpeed > 0 && (
+          <span className="tnum inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="absolute inline-flex h-full w-full rounded-full bg-primary animate-beam-ping" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+            </span>
+            {formatSpeed(aggregateSpeed)}
+          </span>
+        )}
       </header>
       <ul className="beam-scroll max-h-96 divide-y divide-border/60 overflow-y-auto">
         {rows.map((row) => (
@@ -155,9 +178,10 @@ export function TransferRowItem({ row }: { row: TransferRow }) {
   const pct = row.size > 0 ? Math.min(100, (row.transferred / row.size) * 100) : 0
   const isUpload = row.direction === 'p2d'
   const done = row.status === 'done'
+  const active = row.status === 'active'
 
   return (
-    <li className="px-4 py-3">
+    <li className="px-4 py-3 animate-row-in">
       <div className="flex items-center gap-3">
         <span
           className={cn(
@@ -170,34 +194,36 @@ export function TransferRowItem({ row }: { row: TransferRow }) {
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline justify-between gap-2">
-            <p className="truncate text-sm font-medium" title={row.name}>
-              {row.name}
+            <p className="flex min-w-0 items-center gap-1.5 text-sm font-medium" title={row.name}>
+              <FileTypeIcon type={row.type} name={row.name} className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">{row.name}</span>
             </p>
             <span className="tnum shrink-0 text-xs text-muted-foreground">
               {done ? formatBytes(row.size) : `${formatBytes(row.transferred)} / ${formatBytes(row.size)}`}
             </span>
           </div>
           <div className="mt-1.5 flex items-center gap-2">
-            <div className={cn('flex-1', row.status === 'active' && 'progress-shine rounded-full')}>
+            <div className={cn('flex-1', active && 'progress-shine rounded-full')}>
               <Progress value={pct} className="h-1.5" aria-label={`Transfer progress ${pct.toFixed(0)}%`} />
             </div>
             <span className="tnum w-10 shrink-0 text-right text-xs font-medium">{pct.toFixed(0)}%</span>
+            {active && <SpeedSparkline active={active} speed={row.speed} className="h-5 w-16 shrink-0" />}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
             <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide">
               {isUpload ? 'Phone → Desktop' : 'Desktop → Phone'}
             </span>
-            {row.status === 'active' && (
+            {row.transport && (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px]">{row.transport === 'webrtc' ? 'P2P' : 'Relay'}</span>
+            )}
+            {active && (
               <>
                 <span className="tnum">{formatSpeed(row.speed)}</span>
                 {row.etaSec !== null && <span className="tnum">{formatDuration(row.etaSec)} left</span>}
-                {row.transport && (
-                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px]">{row.transport === 'webrtc' ? 'P2P' : 'Relay'}</span>
-                )}
               </>
             )}
             {row.status === 'queued' && <span>Queued…</span>}
-            {row.status === 'done' && (
+            {done && (
               <span className="inline-flex items-center gap-1 font-medium text-primary">
                 <Check className="h-3 w-3" aria-hidden /> Completed
               </span>
@@ -211,7 +237,7 @@ export function TransferRowItem({ row }: { row: TransferRow }) {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {row.status === 'active' && (
+          {active && (
             <Button
               variant="ghost"
               size="icon"
@@ -224,6 +250,7 @@ export function TransferRowItem({ row }: { row: TransferRow }) {
           )}
           {(row.status === 'error' || row.status === 'canceled') && (
             <Button variant="outline" size="sm" className="h-8" onClick={() => retryTransfer(row.id)}>
+              <RotateCcw className="h-3.5 w-3.5" aria-hidden />
               Retry
             </Button>
           )}
