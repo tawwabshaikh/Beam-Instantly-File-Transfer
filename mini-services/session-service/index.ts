@@ -26,7 +26,7 @@ import {
 } from './sessions'
 import { LIMITS, extendWindowFor, type BeamErrorCode, type DeviceInfo, type Role } from './protocol'
 
-const PORT = 3003 // hardcoded per architecture (Caddy gateway rule)
+const PORT = Number(process.env.PORT) || 3003 // hardcoded per architecture (Caddy gateway rule)
 
 const DEFAULT_TTL_MINUTES = 10
 const MIN_TTL_MINUTES = 1
