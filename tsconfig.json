@@ -38,6 +38,7 @@
   ],
   "exclude": [
     "node_modules",
-    "examples/websocket/server.ts"
+    "examples/websocket/server.ts",
+    "mini-services/session-service/**"
   ]
 }
