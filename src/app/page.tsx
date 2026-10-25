@@ -10,7 +10,7 @@ const subscribeToNothing = () => () => {}
 
 /**
  * Beam is a single-route app:
- *  - `/?s=CODE&t=TOKEN`  → phone (joined via QR scan / manual pairing key)
+ *  - `/?s=CODE&t=TOKEN`  → phone/desktop joined via QR or pairing code
  *  - anything else        → desktop experience (Transfer / History / About)
  */
 export default function Page() {
@@ -28,10 +28,10 @@ function PageInner() {
   const t = params.get('t')
 
   const validPairing =
-    !!s && !!t && /^[A-HJ-NP-Z2-9]{6}$/i.test(s) && t.length >= 8 && t.length <= 128
+    !!s && /^[A-HJ-NP-Z2-9]{6}$/i.test(s) && (!t || (t.length >= 8 && t.length <= 128))
 
   return validPairing ? (
-    <MobileSession code={s!.toUpperCase()} token={t!} desktop={!isMobile} />
+    <MobileSession code={s!.toUpperCase()} token={t ?? ''} desktop={!isMobile} />
   ) : (
     <DesktopApp />
   )

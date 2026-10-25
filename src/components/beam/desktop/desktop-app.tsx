@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { AlertTriangle, RotateCcw, CheckCircle2, Clock, Files, Plus, ScanLine } from 'lucide-react'
+import { AlertTriangle, RotateCcw, CheckCircle2, Clock, Files, Plus, ScanLine, KeyRound } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { SiteHeader, type DesktopNavView } from '@/components/beam/site-header'
 import { SiteFooter } from '@/components/beam/site-footer'
@@ -12,6 +12,7 @@ import { SessionDashboard, TransfersList, ReceivedFiles } from '@/components/bea
 import { NotesPanel } from '@/components/beam/shared/notes-panel'
 import { GlobalDropOverlay } from '@/components/beam/shared/global-drop-overlay'
 import { QrScannerDialog } from '@/components/beam/shared/qr-scanner'
+import { PairingCodeDialog } from '@/components/beam/shared/pairing-code-dialog'
 import { SharedTextBanner } from '@/components/beam/shared/shared-text-banner'
 import { HistoryView } from '@/components/beam/desktop/history-view'
 import { AboutView } from '@/components/beam/desktop/about-view'
@@ -70,12 +71,12 @@ function useMounted(): boolean {
 }
 
 /**
- * Floating pairing action: phones scan a desktop QR; desktops can scan the
- * phone's QR to receive files from a session started on the phone.
+ * Phones scan a desktop QR; desktops enter the short code shown on a phone.
  */
 function MobileScanFab() {
   const mounted = useMounted()
   const [scanOpen, setScanOpen] = useState(false)
+  const isMobile = getDeviceInfo().isMobile
   const { t } = useLang()
 
   if (!mounted) return null
@@ -87,19 +88,27 @@ function MobileScanFab() {
         type="button"
         onClick={() => setScanOpen(true)}
         className="fixed bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-5 z-50 inline-flex h-14 items-center gap-2 rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-xl shadow-primary/30 transition-transform active:scale-95"
-        aria-label={getDeviceInfo().isMobile ? t('fab.aria') : 'Scan a phone QR code to pair'}
+        aria-label={isMobile ? t('fab.aria') : 'Enter a phone pairing code'}
       >
-        <ScanLine className="h-5 w-5" aria-hidden />
-        {getDeviceInfo().isMobile ? t('fab.scan') : 'Pair with phone'}
+        {isMobile ? <ScanLine className="h-5 w-5" aria-hidden /> : <KeyRound className="h-5 w-5" aria-hidden />}
+        {isMobile ? t('fab.scan') : 'Pair with phone'}
       </button>
-      <QrScannerDialog
-        open={scanOpen}
-        onOpenChange={setScanOpen}
-        onResult={(code, token) => {
-          setScanOpen(false)
-          window.location.assign(`/?s=${encodeURIComponent(code)}&t=${encodeURIComponent(token)}`)
-        }}
-      />
+      {isMobile ? (
+        <QrScannerDialog
+          open={scanOpen}
+          onOpenChange={setScanOpen}
+          onResult={(code, token) => {
+            setScanOpen(false)
+            window.location.assign(`/?s=${encodeURIComponent(code)}&t=${encodeURIComponent(token)}`)
+          }}
+        />
+      ) : (
+        <PairingCodeDialog
+          open={scanOpen}
+          onOpenChange={setScanOpen}
+          onSubmitCode={(code) => window.location.assign(`/?s=${encodeURIComponent(code)}`)}
+        />
+      )}
     </>
   )
 }

@@ -393,7 +393,9 @@ async function handleGetSession(
     return
   }
   const token = url.searchParams.get('token') ?? ''
-  if (!token || !(await registry.verifyToken(session, token))) {
+  // A session code is the guest pairing key. The host's management actions
+  // still require the longer secret token.
+  if (token && !(await registry.verifyToken(session, token))) {
     sendJson(req, res, 401, { ok: false, code: 'INVALID_TOKEN', message: 'Invalid or missing token' })
     return
   }
@@ -492,8 +494,8 @@ async function handleBeamJoin(socket: Socket, payload: unknown): Promise<void> {
     typeof payload.token === 'string' && payload.token.length >= 1 && payload.token.length <= 128
       ? payload.token
       : null
-  if (!code || !token || !role) {
-    emitSocketError(socket, 'BAD_REQUEST', 'code, token and role are required')
+  if (!code || !role || (role === 'host' && !token)) {
+    emitSocketError(socket, 'BAD_REQUEST', 'code and role are required; hosts also need a session token')
     return
   }
   const device = sanitizeDevice(payload.device)
@@ -514,7 +516,7 @@ async function handleBeamJoin(socket: Socket, payload: unknown): Promise<void> {
     emitSocketError(socket, 'ENDED', 'Session has ended')
     return
   }
-  if (!(await registry.verifyToken(session, token))) {
+  if (role === 'host' && !(await registry.verifyToken(session, token!))) {
     emitSocketError(socket, 'INVALID_TOKEN', 'Invalid session token')
     return
   }

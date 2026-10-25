@@ -40,7 +40,7 @@ export async function GET(
   const { code } = await params
   const token = req.nextUrl.searchParams.get('token') ?? ''
 
-  if (!/^[A-HJ-NP-Z2-9]{6}$/.test(code) || token.length < 8 || token.length > 128) {
+  if (!/^[A-HJ-NP-Z2-9]{6}$/.test(code) || (token && (token.length < 8 || token.length > 128))) {
     return NextResponse.json(
       { ok: false, code: 'INVALID_TOKEN', message: 'This pairing link is malformed.' },
       { status: 400 },
@@ -49,7 +49,7 @@ export async function GET(
 
   try {
     const upstream = await fetch(
-      `${SERVICE_URL}/sessions/${encodeURIComponent(code)}?token=${encodeURIComponent(token)}`,
+      `${SERVICE_URL}/sessions/${encodeURIComponent(code)}${token ? `?token=${encodeURIComponent(token)}` : ''}`,
       { cache: 'no-store' },
     )
     const data = await upstream.json().catch(() => null)

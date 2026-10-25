@@ -69,10 +69,9 @@ export async function createSession(
   })
 }
 
-export async function getSession(code: string, token: string): Promise<SessionInfoResponse> {
-  return request<SessionInfoResponse>(
-    `${BASE}/api/sessions/${encodeURIComponent(code)}?token=${encodeURIComponent(token)}`,
-  )
+export async function getSession(code: string, token = ''): Promise<SessionInfoResponse> {
+  const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
+  return request<SessionInfoResponse>(`${BASE}/api/sessions/${encodeURIComponent(code)}${tokenParam}`)
 }
 
 export async function endSession(code: string, token: string): Promise<{ ok: boolean }> {

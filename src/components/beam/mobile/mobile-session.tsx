@@ -45,7 +45,7 @@ import { cn } from '@/lib/utils'
 /**
  * Guest experience — opened by scanning or entering a host's pairing QR/key.
  */
-export function MobileSession({ code, token, desktop = false }: { code: string; token: string; desktop?: boolean }) {
+export function MobileSession({ code, token = '', desktop = false }: { code: string; token?: string; desktop?: boolean }) {
   const phase = useBeamStore((s) => s.phase)
   const session = useBeamStore((s) => s.session)
   const openSession = useBeamStore((s) => s.openSession)

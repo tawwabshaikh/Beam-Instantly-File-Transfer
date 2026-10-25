@@ -1336,7 +1336,7 @@ export const useBeamStore = create<BeamStore>()((set, get) => ({
 
   /* ---------------- phone: session open ---------------- */
 
-  async openSession(code: string, token: string) {
+  async openSession(code: string, token = '') {
     // Idempotence guard (StrictMode double-mount / re-render)
     if (joiningCode === code && ['opening', 'connecting'].includes(get().phase)) return
     if (get().role === 'guest' && get().session?.code === code && ['connected', 'connecting', 'lost'].includes(get().phase)) return
