@@ -61,11 +61,8 @@ export async function GET(
 
     // Best-effort status touch
     try {
-      const { db } = await import('@/lib/db')
-      await db.transferSession.updateMany({
-        where: { code, status: 'active' },
-        data: { status: 'connected' },
-      })
+      const { markTransferSessionConnected } = await import('@/lib/db')
+      await markTransferSessionConnected(code)
     } catch {
       // ignore
     }

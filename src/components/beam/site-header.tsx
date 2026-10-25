@@ -1,6 +1,7 @@
 'use client'
 
 import { useTheme } from 'next-themes'
+import { useSyncExternalStore } from 'react'
 import { Languages, Moon, Sun, Volume2, VolumeX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -29,6 +30,10 @@ const LANG_ITEMS: { id: Lang; label: string; hint: string }[] = [
   { id: 'hi', label: 'हिन्दी', hint: 'हिं' },
 ]
 
+const subscribeToNothing = () => () => {}
+const getThemeMountedSnapshot = () => true
+const getThemeServerSnapshot = () => false
+
 export function SiteHeader({
   view,
   onNavigate,
@@ -37,6 +42,11 @@ export function SiteHeader({
   onNavigate: (v: DesktopNavView) => void
 }) {
   const { resolvedTheme, setTheme } = useTheme()
+  const themeMounted = useSyncExternalStore(
+    subscribeToNothing,
+    getThemeMountedSnapshot,
+    getThemeServerSnapshot,
+  )
   const { muted, toggle: toggleMute } = useSoundMuted()
   const { lang, setLang, t } = useLang()
   const activeLang = LANG_ITEMS.find((l) => l.id === lang) ?? LANG_ITEMS[0]
@@ -122,7 +132,13 @@ export function SiteHeader({
             size="icon"
             className="h-9 w-9"
             onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
-            aria-label={resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-label={
+              !themeMounted
+                ? 'Change color theme'
+                : resolvedTheme === 'dark'
+                  ? 'Switch to light mode'
+                  : 'Switch to dark mode'
+            }
           >
             <Sun className="h-4 w-4 dark:hidden" />
             <Moon className="hidden h-4 w-4 dark:block" />

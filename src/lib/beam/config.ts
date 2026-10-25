@@ -1,10 +1,7 @@
 /**
  * Central configuration with production-ready environment overrides.
- *
- * In the Z.ai sandbox the socket/signaling service is reached through the
- * Caddy gateway using the XTransformPort query param. In a real production
- * deployment set NEXT_PUBLIC_SIGNALING_WS_URL (e.g. wss://beam.example.com/signaling)
- * and the STUN/TURN servers below — no code changes required.
+ * Set NEXT_PUBLIC_SESSION_SERVICE_URL to the public HTTP(S) URL of the
+ * signaling service. Socket.IO uses the corresponding WS(S) URL.
  */
 
 function envList(value: string | undefined, fallback: string[]): string[] {
@@ -22,8 +19,11 @@ function envInt(value: string | undefined, fallback: number, min: number, max: n
 }
 
 /** socket.io endpoint for the signaling/session service. */
-export const SIGNALING_WS_URL =
-  process.env.NEXT_PUBLIC_SIGNALING_WS_URL ?? '/?XTransformPort=3003'
+const sessionServiceUrl = process.env.NEXT_PUBLIC_SESSION_SERVICE_URL ?? 'http://127.0.0.1:3003'
+export const SIGNALING_WS_URL = sessionServiceUrl
+  .replace(/^https:/, 'wss:')
+  .replace(/^http:/, 'ws:')
+  .replace(/\/+$/, '')
 
 /** Base URL of the Beam REST API (session create/validate proxy on Next.js). */
 export const REST_BASE_URL = process.env.NEXT_PUBLIC_REST_BASE_URL ?? ''

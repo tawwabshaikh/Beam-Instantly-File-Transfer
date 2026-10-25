@@ -32,11 +32,8 @@ export async function POST(
     }
 
     try {
-      const { db } = await import('@/lib/db')
-      await db.transferSession.updateMany({
-        where: { code, tokenHash: createHash('sha256').update(token).digest('hex') },
-        data: { status: 'ended', endedAt: new Date() },
-      })
+      const { markTransferSessionEnded } = await import('@/lib/db')
+      await markTransferSessionEnded(code, createHash('sha256').update(token).digest('hex'))
     } catch {
       // best-effort
     }

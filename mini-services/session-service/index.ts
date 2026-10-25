@@ -1,8 +1,8 @@
 /**
  * Beam session service — session registry + WebRTC signaling relay + chunk pipe.
  *
- * Single Bun process on :3003 (hardcoded by design — the Caddy gateway and the
- * Next.js app expect this port; the port is never put in the URL path).
+ * Single Bun process on the platform-assigned PORT (3003 locally). The port
+ * is never placed in the URL path.
  * REST and socket.io share ONE HTTP listener.
  *
  * Implementation note: socket.io v4 (engine.io) needs a node:http Server to
@@ -26,7 +26,7 @@ import {
 } from './sessions'
 import { LIMITS, extendWindowFor, type BeamErrorCode, type DeviceInfo, type Role } from './protocol'
 
-const PORT = Number(process.env.PORT) || 3003 // hardcoded per architecture (Caddy gateway rule)
+const PORT = Number(process.env.PORT) || 3003
 
 const DEFAULT_TTL_MINUTES = 10
 const MIN_TTL_MINUTES = 1
@@ -279,6 +279,11 @@ async function restHandler(req: IncomingMessage, res: ServerResponse): Promise<v
     const url = new URL(req.url ?? '/', `http://localhost:${PORT}`)
     const method = req.method ?? 'GET'
     const pathname = url.pathname
+
+    if (method === 'GET' && pathname === '/healthz') {
+      sendJson(req, res, 200, { ok: true })
+      return
+    }
 
     if (method === 'OPTIONS') {
       respondPreflight(req, res)
@@ -851,7 +856,7 @@ sweeper.unref?.()
 // ---------------------------------------------------------------------------
 
 server.listen(PORT, () => {
-  console.log('beam session service listening on :3003')
+  console.log(`beam session service listening on :${PORT}`)
 })
 
 let shuttingDown = false

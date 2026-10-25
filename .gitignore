@@ -52,8 +52,6 @@ prompt
 server.log
 # Skills directory
 /skills/
-/dist/
-.vinext/
-.wrangler/
 db/*.db
+prisma/db/
 download/*

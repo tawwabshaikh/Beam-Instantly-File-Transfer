@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: beam-session-service
+    runtime: node
+    plan: free
+    rootDir: mini-services/session-service
+    buildCommand: bun install --production --frozen-lockfile
+    startCommand: bun run start
+    healthCheckPath: /healthz
+    envVars:
+      - key: BUN_VERSION
+        value: 1.4.0
+      - key: ALLOWED_ORIGINS
+        value: '*'
+
+  - type: web
+    name: beam-web
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: node .next/standalone/server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NEXT_PUBLIC_SESSION_SERVICE_URL
+        fromService:
+          type: web
+          name: beam-session-service
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: SESSION_SERVICE_URL
+        fromService:
+          type: web
+          name: beam-session-service
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false

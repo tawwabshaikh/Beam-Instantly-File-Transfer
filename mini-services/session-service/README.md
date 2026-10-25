@@ -5,8 +5,8 @@ WebRTC signaling relay, and the relay chunk-pipe fallback. **Files are never
 stored on the server — it is a pure pipe.**
 
 - Runtime: **Bun** (≥ 1.1), TypeScript strict
-- Port: **3003** — hardcoded by design (the Next.js app and the Caddy gateway
-  expect it; the port is never placed in the URL path)
+- Port: **3003 locally**; production uses the platform-assigned `PORT` (the port
+  is never placed in the URL path)
 - REST + socket.io share **one HTTP listener** on that port
 
 ## Quick start
@@ -26,8 +26,8 @@ Startup log line: `beam session service listening on :3003`.
 | ----------------- | ------- | ----------------------------------------------------------------------- |
 | `ALLOWED_ORIGINS` | `*`     | Comma-separated origin allowlist for REST CORS + socket.io CORS. Set to e.g. `https://beam.example.com,https://phone.example.com`. |
 
-There is intentionally **no `PORT` env** — port 3003 is hardcoded (orchestrator +
-Caddy `XTransformPort=3003` gateway rule). Session limits (20 files, 2 GB/file,
+`PORT` defaults to 3003 locally and uses the hosting platform's assigned port in
+production. Session limits (20 files, 2 GB/file,
 4 GB total, chunk ≤ 256 KB, 3000 chunks/s/socket) match
 `src/lib/beam/protocol.ts` `LIMITS` and are constants on purpose.
 
@@ -112,26 +112,11 @@ Server → client:
 
 ## Production deployment
 
-### Reverse proxy
-Terminate TLS at Caddy/nginx and forward WebSocket upgrades:
-```
-# Caddy (Z.ai sandbox style)
-:80 {
-  handle_path /api/* { ... }
-  @ws query XTransformPort=3003
-  handle @ws { reverse_proxy 127.0.0.1:3003 }   # client: io('/?XTransformPort=3003', { path: '/' })
-}
-```
-```
-# nginx equivalent
-location / {
-  proxy_pass http://127.0.0.1:3003;
-  proxy_http_version 1.1;
-  proxy_set_header Upgrade $http_upgrade;
-  proxy_set_header Connection "upgrade";
-  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-}
-```
+The Render services are defined in the repository's `render.yaml`. Deploy the
+web app and this session service as separate Render web services. Render
+provides HTTPS and WebSocket support; set `SESSION_SERVICE_URL` and
+`NEXT_PUBLIC_SESSION_SERVICE_URL` to this service's public URL (the Blueprint
+connects them automatically).
 
 ### TURN
 WebRTC needs TURN for symmetric-NAT / mobile-carrier peers (STUN alone is not

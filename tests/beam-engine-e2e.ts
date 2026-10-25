@@ -7,14 +7,14 @@
  * (no RTCPeerConnection in Bun forces the relay path) → desktop→phone
  * chunked transfer → phone→desktop transfer → received-file verification.
  *
- * Run: NEXT_PUBLIC_SIGNALING_WS_URL=http://127.0.0.1:3003 \
+ * Run: NEXT_PUBLIC_SESSION_SERVICE_URL=http://127.0.0.1:3003 \
  *      NEXT_PUBLIC_REST_BASE_URL=http://127.0.0.1:3000 \
  *      bun run tests/beam-engine-e2e.ts
  */
 
 import { io, type Socket } from 'socket.io-client'
 
-const SERVICE = process.env.NEXT_PUBLIC_SIGNALING_WS_URL ?? 'http://127.0.0.1:3003'
+const SERVICE = process.env.NEXT_PUBLIC_SESSION_SERVICE_URL ?? 'http://127.0.0.1:3003'
 const TIMEOUT = 30_000
 
 function fail(msg: string): never {

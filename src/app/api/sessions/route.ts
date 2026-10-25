@@ -132,16 +132,13 @@ export async function POST(req: NextRequest) {
 
   // Persist metadata only (hashed token — raw token never touches the DB).
   try {
-    const { db } = await import('@/lib/db')
-    await db.transferSession.create({
-      data: {
-        code: data.code,
-        tokenHash: sha256(data.token),
-        status: 'active',
-        fileCount: files.length,
-        totalBytes: total,
-        expiresAt: new Date(data.expiresAt),
-      },
+    const { recordTransferSession } = await import('@/lib/db')
+    await recordTransferSession({
+      code: data.code,
+      tokenHash: sha256(data.token),
+      fileCount: files.length,
+      totalBytes: total,
+      expiresAt: new Date(data.expiresAt),
     })
   } catch (e) {
     // Bookkeeping is best-effort — never block the user flow on DB hiccups.
