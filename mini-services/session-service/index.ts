@@ -280,8 +280,19 @@ async function restHandler(req: IncomingMessage, res: ServerResponse): Promise<v
     const method = req.method ?? 'GET'
     const pathname = url.pathname
 
-    if (method === 'GET' && pathname === '/healthz') {
-      sendJson(req, res, 200, { ok: true })
+    if ((method === 'GET' || method === 'HEAD') && pathname === '/healthz') {
+      if (method === 'HEAD') {
+        applyCors(req, res)
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Length': Buffer.byteLength(JSON.stringify({ ok: true })),
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+        })
+        res.end()
+      } else {
+        sendJson(req, res, 200, { ok: true })
+      }
       return
     }
 
