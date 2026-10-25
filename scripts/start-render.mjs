@@ -1,0 +1,4 @@
+import process from 'node:process'
+
+process.env.HOSTNAME = '0.0.0.0'
+await import('../.next/standalone/server.js')
