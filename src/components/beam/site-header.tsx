@@ -53,7 +53,7 @@ export function SiteHeader({
 
   return (
     <header className="sticky top-0 z-40 border-b border-border/60 bg-background/80 backdrop-blur-md">
-      <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between gap-3 px-4 sm:px-6">
+      <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between gap-1 px-4 sm:gap-3 sm:px-6">
         <button
           type="button"
           onClick={() => onNavigate('transfer')}
@@ -63,7 +63,7 @@ export function SiteHeader({
           <Logo />
         </button>
 
-        <nav aria-label="Main navigation" className="flex items-center gap-1 sm:gap-2">
+        <nav aria-label="Main navigation" className="flex items-center gap-0 sm:gap-2">
           {NAV_ITEMS.map((item) => (
             <button
               key={item.id}
@@ -71,7 +71,7 @@ export function SiteHeader({
               onClick={() => onNavigate(item.id)}
               aria-current={view === item.id ? 'page' : undefined}
               className={cn(
-                'rounded-lg px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
+                'rounded-lg px-1.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:px-3 sm:text-sm',
                 view === item.id
                   ? 'bg-accent text-accent-foreground'
                   : 'text-muted-foreground hover:text-foreground hover:bg-accent/60',
@@ -81,11 +81,11 @@ export function SiteHeader({
             </button>
           ))}
           <span className="mx-1 hidden h-5 w-px bg-border sm:block" aria-hidden />
-          <InstallPwaButton />
+          <InstallPwaButton className="hidden sm:inline-flex" />
           <Button
             variant="ghost"
             size="icon"
-            className="h-9 w-9"
+            className="hidden h-8 w-8 sm:inline-flex sm:h-9 sm:w-9"
             onClick={toggleMute}
             aria-label={muted ? 'Turn transfer sounds on' : 'Turn transfer sounds off'}
           >
@@ -98,7 +98,7 @@ export function SiteHeader({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-9 gap-1.5 px-2.5"
+                className="h-8 w-8 px-2 sm:h-9 sm:w-auto sm:gap-1.5 sm:px-2.5"
                 aria-label={t('lang.aria')}
                 title={t('lang.aria')}
               >
@@ -130,7 +130,7 @@ export function SiteHeader({
           <Button
             variant="ghost"
             size="icon"
-            className="h-9 w-9"
+            className="h-8 w-8 sm:h-9 sm:w-9"
             onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
             aria-label={
               !themeMounted
