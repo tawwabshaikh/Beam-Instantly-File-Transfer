@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Camera, CameraOff, Loader2, ScanLine } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Dialog,
   DialogContent,
@@ -64,6 +65,8 @@ export function QrScannerDialog({
 }) {
   const [state, setState] = useState<ScanState>('idle')
   const [errorHint, setErrorHint] = useState<string | null>(null)
+  const [pairingValue, setPairingValue] = useState('')
+  const [pairingError, setPairingError] = useState<string | null>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -165,10 +168,10 @@ export function QrScannerDialog({
         <DialogHeader className="px-5 pb-3 pt-5">
           <DialogTitle className="flex items-center gap-2">
             <ScanLine className="h-4 w-4 text-primary" aria-hidden />
-            Scan the desktop QR code
+            Scan a pairing QR code
           </DialogTitle>
           <DialogDescription>
-            Point the camera at the QR code shown on your computer.
+            Scan the other device’s QR code, or enter its pairing link/key below.
           </DialogDescription>
         </DialogHeader>
 
@@ -232,8 +235,41 @@ export function QrScannerDialog({
           )}
         </div>
 
+        <form
+          className="space-y-2 border-t border-border px-5 py-4"
+          onSubmit={(event) => {
+            event.preventDefault()
+            const pairing = parsePairingPayload(pairingValue)
+            if (!pairing) {
+              setPairingError('Enter the pairing link or CODE-KEY shown on the other device.')
+              return
+            }
+            setPairingError(null)
+            stopCamera()
+            onOpenChange(false)
+            onResult(pairing.code, pairing.token)
+          }}
+        >
+          <label htmlFor="pairing-key" className="text-xs font-medium">Pairing link or key</label>
+          <div className="flex gap-2">
+            <Input
+              id="pairing-key"
+              value={pairingValue}
+              onChange={(event) => {
+                setPairingValue(event.target.value)
+                setPairingError(null)
+              }}
+              placeholder="Paste link or CODE-KEY"
+              autoComplete="off"
+              className="min-w-0"
+            />
+            <Button type="submit" className="shrink-0">Pair</Button>
+          </div>
+          {pairingError && <p role="alert" className="text-xs text-destructive">{pairingError}</p>}
+        </form>
+
         <div className="flex items-center justify-between gap-3 border-t border-border px-5 py-3.5">
-          <p className="text-xs text-muted-foreground">Nothing is uploaded — scanning happens on your phone.</p>
+          <p className="text-xs text-muted-foreground">Scanning stays on this device; files are not uploaded to pair.</p>
           {(state === 'denied' || state === 'error' || state === 'scanning') && (
             <Button size="sm" variant="outline" className="h-8 shrink-0" onClick={() => void startCamera()}>
               <Camera className="h-3.5 w-3.5" aria-hidden />

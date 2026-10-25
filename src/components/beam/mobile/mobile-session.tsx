@@ -43,10 +43,9 @@ import { useLang } from '@/lib/beam/i18n'
 import { cn } from '@/lib/utils'
 
 /**
- * Phone experience — opened by scanning the desktop's QR code.
- * Single-screen, thumb-friendly, all 11 lifecycle states.
+ * Guest experience — opened by scanning or entering a host's pairing QR/key.
  */
-export function MobileSession({ code, token }: { code: string; token: string }) {
+export function MobileSession({ code, token, desktop = false }: { code: string; token: string; desktop?: boolean }) {
   const phase = useBeamStore((s) => s.phase)
   const session = useBeamStore((s) => s.session)
   const openSession = useBeamStore((s) => s.openSession)
@@ -60,15 +59,15 @@ export function MobileSession({ code, token }: { code: string; token: string }) 
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
-      <MobileHeader code={code} expiresAt={session?.expiresAt ?? 0} ttlMs={session?.sessionTtlMs ?? 0} />
+      <MobileHeader code={code} expiresAt={session?.expiresAt ?? 0} ttlMs={session?.sessionTtlMs ?? 0} desktop={desktop} />
 
-      <main className="mx-auto w-full max-w-md flex-1 px-4 pb-10 pt-5 safe-bottom">
+      <main className={cn('mx-auto w-full flex-1 px-4 pb-10 pt-5 safe-bottom', desktop ? 'max-w-5xl' : 'max-w-md')}>
         {phase === 'opening' && <OpeningView />}
         {phase === 'connecting' && <ConnectingView />}
         {(phase === 'connected' ||
           phase === 'waiting' ||
           phase === 'creating' ||
-          phase === 'idle') && <ConnectedView />}
+          phase === 'idle') && <ConnectedView desktop={desktop} />}
         {phase === 'lost' && <LostView />}
         {phase === 'expired' && <ExpiredView />}
         {phase === 'invalid' && <InvalidView />}
@@ -90,7 +89,7 @@ export function MobileSession({ code, token }: { code: string; token: string }) 
 /* Header                                                             */
 /* ------------------------------------------------------------------ */
 
-function MobileHeader({ code, expiresAt, ttlMs }: { code: string; expiresAt: number; ttlMs: number }) {
+function MobileHeader({ code, expiresAt, ttlMs, desktop }: { code: string; expiresAt: number; ttlMs: number; desktop: boolean }) {
   const remaining = useCountdown(expiresAt)
   const { muted, toggle } = useSoundMuted()
   const { t } = useLang()
@@ -105,7 +104,7 @@ function MobileHeader({ code, expiresAt, ttlMs }: { code: string; expiresAt: num
 
   return (
     <header className="sticky top-0 z-40 border-b border-border/60 bg-background/85 backdrop-blur-md">
-      <div className="mx-auto flex h-12 w-full max-w-md items-center justify-between px-4">
+      <div className={cn('mx-auto flex h-12 w-full items-center justify-between px-4', desktop ? 'max-w-5xl' : 'max-w-md')}>
         <Logo size="sm" />
         <div className="flex items-center gap-1.5">
           <code className="tnum rounded-md border border-border bg-muted px-2 py-1 text-xs font-semibold tracking-[0.15em]">
@@ -208,7 +207,7 @@ function ConnectingView() {
 /* Connected — the main workspace                                     */
 /* ------------------------------------------------------------------ */
 
-function ConnectedView() {
+function ConnectedView({ desktop }: { desktop: boolean }) {
   const peerDevice = useBeamStore((s) => s.peerDevice)
   const manifest = useBeamStore((s) => s.manifest)
   const mode = useBeamStore((s) => s.mode)
@@ -273,7 +272,7 @@ function ConnectedView() {
         <header className="flex items-center justify-between gap-2 border-b border-border/70 px-4 py-3">
           <h2 className="flex items-center gap-2 text-sm font-semibold">
             <ArrowDownToLine className="h-4 w-4 text-primary" aria-hidden />
-            {t('mob.from.title')}
+            {desktop ? 'Files from phone' : t('mob.from.title')}
             {manifest.length > 0 && (
               <span
                 key={manifest.length}
@@ -325,7 +324,7 @@ function ConnectedView() {
       <SharedTextBanner variant="mobile" />
 
       {/* Send: files to desktop */}
-      <SendToDesktop disabled={!peerDevice || mode === 'none'} rows={p2dRows} active={p2dActive} />
+      <SendToDesktop desktop={desktop} disabled={!peerDevice || mode === 'none'} rows={p2dRows} active={p2dActive} />
 
       {/* Text notes — works over relay or P2P, independent of file transfers */}
       <NotesPanel variant="mobile" />
@@ -459,10 +458,12 @@ function MobileFileRow({ fileId, flash = false }: { fileId: string; flash?: bool
 }
 
 function SendToDesktop({
+  desktop,
   disabled,
   rows,
   active,
 }: {
+  desktop: boolean
   disabled: boolean
   rows: TransferRow[]
   active: boolean
@@ -484,9 +485,11 @@ function SendToDesktop({
       <header className="border-b border-border/70 px-4 py-3">
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           <ArrowUpFromLine className="h-4 w-4 text-purple-600 dark:text-purple-400" aria-hidden />
-          {t('mob.send.title')}
+          {desktop ? 'Send files to phone' : t('mob.send.title')}
         </h2>
-        <p className="mt-0.5 text-xs text-muted-foreground">{t('mob.send.sub')}</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          {desktop ? 'Files selected here will be sent to the paired phone.' : t('mob.send.sub')}
+        </p>
       </header>
 
       <input

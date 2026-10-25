@@ -70,16 +70,15 @@ function useMounted(): boolean {
 }
 
 /**
- * Floating "Scan QR" action for phones landing on the desktop page without
- * pairing params (e.g. typed the address or opened the installed PWA). Lets
- * them join a session without leaving the app for the camera.
+ * Floating pairing action: phones scan a desktop QR; desktops can scan the
+ * phone's QR to receive files from a session started on the phone.
  */
 function MobileScanFab() {
   const mounted = useMounted()
   const [scanOpen, setScanOpen] = useState(false)
   const { t } = useLang()
 
-  if (!mounted || !getDeviceInfo().isMobile) return null
+  if (!mounted) return null
   if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('s')) return null
 
   return (
@@ -88,10 +87,10 @@ function MobileScanFab() {
         type="button"
         onClick={() => setScanOpen(true)}
         className="fixed bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-5 z-50 inline-flex h-14 items-center gap-2 rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-xl shadow-primary/30 transition-transform active:scale-95"
-        aria-label={t('fab.aria')}
+        aria-label={getDeviceInfo().isMobile ? t('fab.aria') : 'Scan a phone QR code to pair'}
       >
         <ScanLine className="h-5 w-5" aria-hidden />
-        {t('fab.scan')}
+        {getDeviceInfo().isMobile ? t('fab.scan') : 'Pair with phone'}
       </button>
       <QrScannerDialog
         open={scanOpen}

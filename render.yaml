@@ -14,7 +14,7 @@ services:
         value: '*'
 
   - type: web
-    name: beam-web
+    name: beam
     runtime: node
     plan: free
     buildCommand: npm ci && npm run build
