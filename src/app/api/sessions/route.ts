@@ -15,6 +15,10 @@ const MAX_TTL_MINUTES = 60
 const MAX_FILES = 20
 const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
 const MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
+// A free Render instance can take around a minute to wake after inactivity.
+// Retry only non-JSON platform responses: the session service itself always
+// returns JSON, so this cannot repeat a successfully-created session.
+const SERVICE_WAKE_RETRY_DELAYS_MS = [2_000, 4_000, 6_000, 8_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000]
 
 /* ---------------- tiny per-IP rate limiter ---------------- */
 
@@ -99,26 +103,54 @@ export async function POST(req: NextRequest) {
   )
 
   // Forward to the session service — it generates code + token and owns the live session.
-  let upstream: Response
+  let upstream: Response | undefined
   try {
-    upstream = await fetch(`${SERVICE_URL}/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        files: files.map((f, i) => ({
-          id: typeof f.id === 'string' && VALID_ID.test(f.id) ? f.id : `f${i}`.padEnd(8, '0'),
-          name: f.name,
-          size: f.size,
-          type: typeof f.type === 'string' && f.type ? f.type : 'application/octet-stream',
-        })),
-        ttlMinutes: ttl,
-      }),
-      cache: 'no-store',
+    const payload = JSON.stringify({
+      files: files.map((f, i) => ({
+        id: typeof f.id === 'string' && VALID_ID.test(f.id) ? f.id : `f${i}`.padEnd(8, '0'),
+        name: f.name,
+        size: f.size,
+        type: typeof f.type === 'string' && f.type ? f.type : 'application/octet-stream',
+      })),
+      ttlMinutes: ttl,
     })
+
+    for (let attempt = 0; attempt <= SERVICE_WAKE_RETRY_DELAYS_MS.length; attempt++) {
+      upstream = await fetch(`${SERVICE_URL}/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+        cache: 'no-store',
+      })
+
+      const isJson = upstream.headers.get('content-type')?.toLowerCase().includes('application/json')
+      const mayBeRenderWakePage = !isJson && (upstream.ok || [502, 503, 504].includes(upstream.status))
+      const retryDelay = SERVICE_WAKE_RETRY_DELAYS_MS[attempt]
+      if (!mayBeRenderWakePage || retryDelay === undefined) break
+
+      // Consume the platform response before retrying the same request.
+      await upstream.arrayBuffer()
+      await new Promise((resolve) => setTimeout(resolve, retryDelay))
+    }
   } catch {
     return NextResponse.json(
       { ok: false, code: 'INTERNAL', message: 'Session service unavailable. Try again in a moment.' },
       { status: 502 },
+    )
+  }
+
+  if (!upstream) {
+    return NextResponse.json(
+      { ok: false, code: 'SERVICE_WAKING', message: 'Session service did not respond. Please wait a minute and try again.' },
+      { status: 503 },
+    )
+  }
+
+  const contentType = upstream.headers.get('content-type')?.toLowerCase() ?? ''
+  if (!contentType.includes('application/json')) {
+    return NextResponse.json(
+      { ok: false, code: 'SERVICE_WAKING', message: 'Session service is waking up. Please wait a minute and try again.' },
+      { status: 503 },
     )
   }
 
